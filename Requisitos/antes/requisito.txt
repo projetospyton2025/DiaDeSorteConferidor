@@ -1,0 +1,138 @@
+
+
+# Project Structure:
+  Diretório: J:\Meu DrIve\ProjetosPython\LoterIas\Conferidores\diadesortecoferirdor
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+d-----        29/01/2025     07:35                .git
+d-----        29/01/2025     07:36                venv
+d-----        29/01/2025     17:28                __pycache__
+d-----        29/01/2025     17:28                .vscode
+d-----        29/01/2025     17:28                Requisitos
+d-----        29/01/2025     17:28                templates
+d-----        29/01/2025     17:28                static
+------        29/01/2025     17:28           2249 requerimentosLocal.txt
+------        29/01/2025     17:28           2123 processing.py
+------        29/01/2025     17:28            223 .env
+------        29/01/2025     17:28            286 .gitignore
+------        29/01/2025     17:28           3031 redis_config.py
+------        29/01/2025     17:28           1745 setup.ps1
+------        29/01/2025     17:28           3098 requirements.txt
+------        29/01/2025     17:28           3957 DiaDeSorteConferidor.ps1
+------        29/01/2025     17:28          15634 app.py
+------        29/01/2025     19:30           1075 LICENSE
+------        29/01/2025     19:30           1650 README.md
+
+
+(venv) PS J:\Meu DrIve\ProjetosPython\LoterIas\Conferidores\diadesortecoferirdor>
+
+
+
+# requirements.txt
+# requirements.txt
+# flask==2.0.3 novo
+
+#----------------------Estavam estes ate as 9:00 do dia 29-01
+# flask[async]
+# Werkzeug==2.0.3
+# requests==2.26.0
+# python-dotenv==0.19.0
+# aiohttp --only-binary=:all: # Para requisições assíncronas novo
+# asyncio==3.4.3 # Para processar múltiplas requisições novo
+# redis # novo
+# pandas # novo
+# python-dotenv # novo
+# asyncio # novo
+
+# Para tentar ajeitar a reslução de conflitos de dependências
+# pip install -r requirements.txt --use-deprecated=legacy-resolver
+
+aiohappyeyeballs
+aiohttp --only-binary=:all:
+aiosignal
+annotated-types
+anyio
+arrow
+asttokens
+async-lru
+asyncio
+attrs
+Babel
+bleach
+blinker
+build
+certifi
+charset-normalizer
+click
+colorama
+comm
+decorator
+defusedxml
+executing
+fastapi
+fastjsonschema
+flask[async]
+Flask-Login
+Flask-Mail
+flask
+fqdn
+frozenlist
+httpcore
+httpx
+idna
+ipykernel
+ipython
+isoduration
+itsdangerous
+jedi
+jsonpointer
+jsonschema
+jsonschema-specifications
+jupyter-events
+jupyter-lsp
+jupyter_client
+jupyter_core
+jupyter_server
+jupyter_server_terminals
+jupyterlab
+jupyterlab_pygments
+jupyterlab_server
+MarkupSafe
+matplotlib-inline
+mistune
+mpmath
+multidict
+nbclient
+nbconvert
+nbformat
+nest-asyncio
+notebook
+notebook_shim
+numpy
+overrides
+packaging
+pandas
+pandocfilters
+parso
+pip-tools
+platformdirs
+prometheus_client
+prompt_toolkit
+propcache
+psutil
+pure-eval
+pycparser
+pydantic
+pydantic_core
+Pygments
+pyproject_hooks
+python-dotenv
+python-json-logger
+python-multipart
+pytz
+redis
+
+
+

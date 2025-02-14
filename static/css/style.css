@@ -1,0 +1,323 @@
+/* Base styles and variables */
+:root {
+    --primary-color: #008751;
+    --secondary-color: #005c36;
+    --danger-color: #dc3545;
+    --success-color: #28a745;
+    --warning-color: #ffc107;
+    --info-color: #17a2b8;
+    --light-gray: #f4f4f4;
+    --border-color: #dee2e6;
+    --text-primary: #495057;
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.1);
+    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+    --transition-speed: 0.3s;
+}
+
+/* Reset and base styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    line-height: 1.6;
+    color: var(--text-primary);
+    background-color: var(--light-gray);
+    padding: clamp(10px, 2vw, 20px);
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    background-color: white;
+    padding: clamp(15px, 3vw, 30px);
+    border-radius: 8px;
+    box-shadow: var(--shadow-sm);
+}
+
+/* Typography */
+h1 {
+    font-size: clamp(1.5rem, 3vw, 2rem);
+    margin-bottom: 1rem;
+    color: var(--primary-color);
+    text-align: center;
+}
+
+h2 {
+    font-size: clamp(1.2rem, 2.5vw, 1.5rem);
+    margin: 1.5rem 0;
+    color: var(--text-primary);
+}
+
+/* Volante (Game Board) */
+.volante {
+    margin: 20px 0;
+    padding: clamp(15px, 3vw, 25px);
+    background-color: #f8f9fa;
+    border-radius: 8px;
+    box-shadow: var(--shadow-sm);
+}
+
+/* Numbers grid */
+.numeros {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(40px, 1fr));
+    gap: clamp(4px, 1vw, 8px);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 15px;
+}
+
+.numero {
+    aspect-ratio: 1;
+    min-width: 36px;
+    border-radius: 50%;
+    border: 2px solid var(--border-color);
+    background-color: white;
+    color: var(--text-primary);
+    font-weight: bold;
+    font-size: clamp(14px, 2vw, 16px);
+    cursor: pointer;
+    transition: all var(--transition-speed);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.numero:hover {
+    background-color: var(--light-gray);
+    transform: scale(1.05);
+}
+
+.numero.selecionado {
+    background-color: var(--success-color);
+    color: white;
+    border-color: var(--success-color);
+}
+
+/* Months grid */
+.meses {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: clamp(8px, 1.5vw, 12px);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 15px;
+}
+
+.mes {
+    padding: 8px;
+    border: 2px solid var(--border-color);
+    border-radius: 4px;
+    background-color: white;
+    cursor: pointer;
+    transition: all var(--transition-speed);
+    font-size: clamp(12px, 1.8vw, 14px);
+}
+
+.mes:hover {
+    background-color: var(--light-gray);
+    transform: translateY(-2px);
+}
+
+.mes.selecionado {
+    background-color: var(--success-color);
+    color: white;
+    border-color: var(--success-color);
+}
+
+/* Drop zone */
+.drop-zone {
+    width: 100%;
+    max-width: 800px;
+    height: clamp(120px, 20vw, 180px);
+    margin: 20px auto;
+    padding: clamp(15px, 3vw, 25px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: clamp(14px, 2vw, 16px);
+    border: 3px dashed var(--primary-color);
+    border-radius: 12px;
+    background-color: rgba(0, 135, 81, 0.05);
+    transition: all var(--transition-speed);
+}
+
+/* Controls section */
+.controles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: clamp(10px, 2vw, 20px);
+    margin: 20px 0;
+    padding: clamp(15px, 3vw, 25px);
+    background-color: #f8f9fa;
+    border-radius: 8px;
+}
+
+.input-group {
+    flex: 1;
+    min-width: 200px;
+}
+
+/* Buttons */
+.btn {
+    padding: clamp(8px, 1.5vw, 12px) clamp(15px, 2.5vw, 25px);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+    font-size: clamp(14px, 1.8vw, 16px);
+    transition: all var(--transition-speed);
+    white-space: nowrap;
+}
+
+/* Results cards */
+.cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: clamp(10px, 2vw, 20px);
+    margin-top: 20px;
+}
+
+.card {
+    padding: clamp(15px, 3vw, 25px);
+    border-radius: 8px;
+    background-color: #f8f9fa;
+    text-align: center;
+    box-shadow: var(--shadow-sm);
+}
+
+/* Tables */
+.tabela-container {
+    overflow-x: auto;
+    margin: 20px 0;
+}
+
+.tabela-premios {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: clamp(12px, 1.8vw, 14px);
+}
+
+.tabela-premios th,
+.tabela-premios td {
+    padding: clamp(8px, 1.5vw, 12px);
+    border: 1px solid var(--border-color);
+    text-align: left;
+}
+
+/* Responsive breakpoints */
+@media screen and (max-width: 1024px) {
+    .container {
+        padding: 15px;
+    }
+}
+
+@media screen and (max-width: 768px) {
+    .controles {
+        flex-direction: column;
+    }
+    
+    .input-group {
+        width: 100%;
+    }
+    
+    .cards {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media screen and (max-width: 480px) {
+    .cards {
+        grid-template-columns: 1fr;
+    }
+    
+    .numeros {
+        grid-template-columns: repeat(4, 1fr);
+    }
+    
+    .meses {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+/* Smartwatch specific styles */
+@media screen and (max-width: 280px) {
+    body {
+        padding: 5px;
+    }
+    
+    .container {
+        padding: 10px;
+    }
+    
+    .numeros {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 2px;
+    }
+    
+    .numero {
+        min-width: 28px;
+        font-size: 12px;
+    }
+    
+    .meses {
+        grid-template-columns: 1fr;
+    }
+    
+    .btn {
+        padding: 6px 12px;
+        font-size: 12px;
+    }
+    
+    .card {
+        padding: 10px;
+    }
+    
+    .tabela-premios {
+        font-size: 10px;
+    }
+}
+
+/* Animations and transitions */
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.fade-in {
+    animation: fadeIn var(--transition-speed) ease-in;
+}
+
+/* Accessibility improvements */
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* Print styles */
+@media print {
+    .no-print {
+        display: none;
+    }
+    
+    body {
+        background: white;
+    }
+    
+    .container {
+        box-shadow: none;
+    }
+}
