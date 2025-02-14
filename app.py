@@ -151,11 +151,11 @@ async def conferir():
         data = request.get_json()
         jogos = data['jogos']
         
-<<<<<<< HEAD
+
         # Pega os números dos concursos
         inicio = int(data.get('inicio', 1))
         fim = int(data.get('fim', await obter_ultimo_concurso()))
-=======
+
         logger.info(f"\n{'='*50}")
         logger.info(f"Iniciando conferência com {len(jogos)} jogos")
         logger.info("Detalhes dos jogos a serem conferidos:")
@@ -170,20 +170,20 @@ async def conferir():
         fim = data.get('fim', await obter_ultimo_concurso())
         logger.info(f"Faixa de concursos a verificar: {inicio} até {fim}")
         logger.info(f"Total de concursos a processar: {fim - inicio + 1}")
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
+
         
         # Usa o novo processador em lotes
         resultados = await processar_todos_jogos(inicio, fim, jogos)
         return jsonify(resultados)
         
-<<<<<<< HEAD
+
     except Exception as e:
         logger.error(f"Erro na conferência: {str(e)}")
         return jsonify({
             'error': 'Erro ao processar jogos',
             'message': str(e)
         }), 500
-=======
+
         logger.info("Iniciando processamento dos concursos...")
         async with aiohttp.ClientSession() as session:
             concursos_processados = 0
@@ -272,7 +272,6 @@ async def conferir():
         return jsonify({'error': 'Erro ao processar jogos', 'message': str(e)}), 500       
         
         
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
 
 def calcular_premio(resultado, acertos, acertou_mes=False):
     premio = 0
