@@ -498,7 +498,6 @@ document.addEventListener('DOMContentLoaded', async function() {
         }
     });
 
-    // Botão Incluir
    // Botão Incluir
     incluirBtn.addEventListener('click', () => {
         // Debug para verificar os números selecionados
@@ -607,6 +606,39 @@ document.addEventListener('DOMContentLoaded', async function() {
     });
 });
 
+function adicionarLog(mensagem) {
+    const logDiv = document.createElement('div');
+    logDiv.className = 'log-mensagem';
+    logDiv.textContent = mensagem;
+    const progressText = document.querySelector('.progress-text');
+    progressText.appendChild(logDiv);
+    // Mantém apenas as últimas 5 mensagens
+    while (progressText.children.length > 5) {
+        progressText.removeChild(progressText.firstChild);
+    }
+}
+
+/* ADICIONE ESTAS DUAS FUNÇÕES AUXILIARES logo após a função conferir:  */
+
+function atualizarProgressoConferencia(loteAtual, totalLotes, concursoInicio, concursoFim) {
+    const progressFill = document.getElementById('progress-fill');
+    const loteAtualSpan = document.getElementById('lote-atual');
+    const totalLotesSpan = document.getElementById('total-lotes');
+    const concursoAtualSpan = document.getElementById('concurso-atual');
+    const concursoFimSpan = document.getElementById('concurso-fim');
+    
+    const progresso = (loteAtual / totalLotes) * 100;
+    
+    progressFill.style.width = `${progresso}%`;
+    loteAtualSpan.textContent = loteAtual;
+    totalLotesSpan.textContent = totalLotes;
+    concursoAtualSpan.textContent = concursoInicio;
+    concursoFimSpan.textContent = concursoFim;
+}
+/* ADICIONE ESTAS DUAS FUNÇÕES AUXILIARES logo após a função conferir: */
+
+
+
 function formatarValor(valor) {
     return valor > 0 ? 
         `R$ ${valor.toLocaleString('pt-BR', {minimumFractionDigits: 2})}` : 
@@ -619,4 +651,27 @@ function debugNumeros() {
         numeros: Array.from(numerosSelecionados).sort((a, b) => a - b),
         mes: mesSelecionado
     });
+}
+// Adicione ao seu arquivo main.js
+function atualizarProgressoConferencia(loteAtual, totalLotes, concursoInicio, concursoFim) {
+    const progressFill = document.getElementById('progress-fill');
+    const loteAtualSpan = document.getElementById('lote-atual');
+    const totalLotesSpan = document.getElementById('total-lotes');
+    const concursoAtualSpan = document.getElementById('concurso-atual');
+    const concursoFimSpan = document.getElementById('concurso-fim');
+    
+    const progresso = (loteAtual / totalLotes) * 100;
+    
+    progressFill.style.width = `${progresso}%`;
+    loteAtualSpan.textContent = loteAtual;
+    totalLotesSpan.textContent = totalLotes;
+    concursoAtualSpan.textContent = concursoInicio;
+    concursoFimSpan.textContent = concursoFim;
+}
+// Adicione ao seu JavaScript
+function adicionarLog(mensagem) {
+    const logDiv = document.createElement('div');
+    logDiv.className = 'log-mensagem';
+    logDiv.textContent = mensagem;
+    document.querySelector('.progress-text').appendChild(logDiv);
 }

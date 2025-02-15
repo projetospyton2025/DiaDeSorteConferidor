@@ -1,7 +1,5 @@
-<<<<<<< HEAD
 ajuste o CSS para uma boa vizualização... 
 tanto para desktop, smartwhatch, celular, tablet etc..
-=======
 # CÓDIGO OK - CONFERINDO EM LOTES
 # CONFERÊNCIA RÁPIDA COM MAIS DE 5000 MIL APOSTAS...
 # AGORA PRECISO VER NO LOG ESTAS CONFERÊNCIAS... 
@@ -9,7 +7,6 @@ tanto para desktop, smartwhatch, celular, tablet etc..
 # RedisConfig CONFIGURAR ONLINE
 
 
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
 
 logger.error(f"Tentativa {attempt + 1} falhou: {str(e)}")
 logger.info(f"Processando arquivo: {file.filename}")
@@ -20,12 +17,10 @@ logger.info(f"Processando concurso {concurso}")
 logger.info(f"Encontrado {acertos} acertos no concurso {concurso}")
 
 
-<<<<<<< HEAD
 
 TESTANDO A QUANTIDADE DE JOGOS 5000 (trava)
 Começar a conferência por lotes... ok 
 pode ser de 930 em 930 por vez.. para cada concurso..ok
-=======
 aiohappyeyeballs
 aiohttp --only-binary=:all:
 aiosignal
@@ -113,22 +108,17 @@ redis
 openpyxl
 dataclasses
 typing
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
 
 
 
 
-<<<<<<< HEAD
 # Project Structure:
   Diretório: J:\Meu DrIve\ProjetosPython\LoterIas\Conferidores\diadesortecoferirdor
-=======
 Diretório: H:\Meu Drive\ProjetosPython\Loterias\Conferidores\DiaDeSorteConferidor
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
 
 
 Mode                 LastWriteTime         Length Name
 ----                 -------------         ------ ----
-<<<<<<< HEAD
 d-----        29/01/2025     07:35                .git
 d-----        29/01/2025     07:36                venv
 d-----        29/01/2025     17:28                __pycache__
@@ -281,7 +271,6 @@ websocket-client==1.8.0
 Werkzeug==3.1.3
 wheel==0.45.1
 yarl==1.18.3
-=======
 d-----        13/02/2025     17:32                Requisitos
 d-----        13/02/2025     17:32                static
 d-----        13/02/2025     17:32                templates
@@ -302,7 +291,6 @@ d-----        13/02/2025     18:11                __pycache__
 
 
 (venv) PS H:\Meu Drive\ProjetosPython\Loterias\Conferidores\DiaDeSorteConferidor>
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
 
 
 from flask import Flask, render_template, request, jsonify, send_file
@@ -453,20 +441,16 @@ def processar_arquivo():
 <<<<<<< HEAD
 
 @app.route('/conferir', methods=['POST'])
-=======
         
  @app.route('/conferir', methods=['POST'])
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
 async def conferir():
     try:
         data = request.get_json()
         jogos = data['jogos']
         
-<<<<<<< HEAD
         # Definição dos lotes de concursos
         inicio = data.get('inicio', 1)
         fim = data.get('fim', await obter_ultimo_concurso())
-=======
         logger.info(f"\n{'='*50}")
         logger.info(f"Iniciando conferência com {len(jogos)} jogos")
         logger.info("Detalhes dos jogos a serem conferidos:")
@@ -481,7 +465,6 @@ async def conferir():
         fim = data.get('fim', await obter_ultimo_concurso())
         logger.info(f"Faixa de concursos a verificar: {inicio} até {fim}")
         logger.info(f"Total de concursos a processar: {fim - inicio + 1}")
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
         
         resultados_finais = {
             'acertos': [],
@@ -489,11 +472,9 @@ async def conferir():
             'lotes_processados': []
         }
         
-<<<<<<< HEAD
         async with aiohttp.ClientSession() as session:
             for concurso in range(inicio, fim + 1):
                 try:
-=======
         logger.info("Iniciando processamento dos concursos...")
         async with aiohttp.ClientSession() as session:
             concursos_processados = 0
@@ -504,20 +485,16 @@ async def conferir():
                     concursos_processados += 1
                     logger.info(f"\nProcessando concurso {concurso} ({concursos_processados}/{fim - inicio + 1})")
                     
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
                     resultado = await fetch_with_retry(session, f"{API_BASE_URL}/diadesorte/{concurso}")
                     
                     if resultado and 'dezenas' in resultado:
                         dezenas = [int(d) for d in resultado['dezenas']]
                         mes_sorteado = resultado.get('mesDaSorte', '').upper()
-<<<<<<< HEAD
                         
-=======
                         dezenas_formatadas = ', '.join(str(d).zfill(2) for d in sorted(dezenas))
                         logger.info(f"Números sorteados: [{dezenas_formatadas}] | Mês: {mes_sorteado}")
                         
                         premios_concurso = 0
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
                         for jogo in jogos:
                             numeros = jogo['numeros']
                             mes_jogado = jogo.get('mes')
@@ -527,8 +504,6 @@ async def conferir():
                             
                             if acertos >= 4 or acertou_mes:
                                 premio = calcular_premio(resultado, acertos, acertou_mes)
-<<<<<<< HEAD
-=======
                                 premios_concurso += 1
                                 premios_encontrados += 1
                                 
@@ -539,7 +514,6 @@ async def conferir():
                                 if mes_jogado:
                                     logger.info(f"    Mês jogado: {mes_jogado} - {'✓ ACERTOU!' if acertou_mes else '✗ não acertou'}")
                                 logger.info(f"    Prêmio: R$ {premio:.2f}")
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
                                 
                                 if acertos == 4: resultados_finais['resumo']['quatro'] += 1
                                 elif acertos == 5: resultados_finais['resumo']['cinco'] += 1
@@ -560,12 +534,9 @@ async def conferir():
                                     'acertou_mes': acertou_mes,
                                     'premio': premio
                                 })
-<<<<<<< HEAD
-=======
                         
                         if premios_concurso > 0:
                             logger.info(f"  Total de prêmios no concurso {concurso}: {premios_concurso}")
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
                 
                 except Exception as e:
                     logger.error(f"Erro processando concurso {concurso}: {str(e)}")
@@ -573,8 +544,6 @@ async def conferir():
                 
                 await asyncio.sleep(0.1)  # Pequena pausa entre requisições
         
-<<<<<<< HEAD
-=======
         logger.info(f"\n{'='*50}")
         logger.info("Processamento concluído! Resumo final:")
         logger.info(f"Total de concursos processados: {concursos_processados}")
@@ -588,18 +557,14 @@ async def conferir():
         logger.info(f"\nTotal em prêmios: R$ {resultados_finais['resumo']['total_premios']:.2f}")
         logger.info(f"{'='*50}\n")
         
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
         return jsonify(resultados_finais)
 
     except Exception as e:
         logger.error(f"Erro na conferência geral: {str(e)}")
-<<<<<<< HEAD
         return jsonify({'error': 'Erro ao processar jogos', 'message': str(e)}), 500
-=======
         return jsonify({'error': 'Erro ao processar jogos', 'message': str(e)}), 500       
         
         
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
 
 def calcular_premio(resultado, acertos, acertou_mes=False):
     premio = 0
@@ -741,10 +706,7 @@ def exportar_dados(tipo, formato):
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-<<<<<<< HEAD
 	
-=======
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
 	import redis
 import os
 from typing import Optional
@@ -833,7 +795,6 @@ class RedisConfig:
             return False
 
 redis_config = RedisConfig()
-<<<<<<< HEAD
 
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -1051,8 +1012,6 @@ redis_config = RedisConfig()
 </body>
 </html>
 
-=======
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
 // Variáveis globais
 const jogosIncluidos = [];
 const jogosSelecionados = new Set();
@@ -1676,8 +1635,6 @@ function debugNumeros() {
     });
 }
 
-<<<<<<< HEAD
-=======
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -1893,7 +1850,6 @@ function debugNumeros() {
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>
 </html>
->>>>>>> 6c387e8c1b6502446e404627ad16ddaeea95fed6
 /* Base styles and variables */
 :root {
     --primary-color: #008751;

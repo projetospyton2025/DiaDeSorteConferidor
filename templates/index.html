@@ -92,6 +92,7 @@
             </button>
         </div>
 
+		<!--
         <div id="overlay" class="overlay" style="display: none;">
             <div class="progress">
                 <div class="progress-bar"></div>
@@ -101,6 +102,24 @@
                 </button>
             </div>
         </div>
+		-->
+		<div id="overlay" class="overlay" style="display: none;">
+			<div class="progress">
+				<h3>Processando Jogos</h3>
+				<div class="progress-bar">
+					<div class="progress-bar-fill" id="progress-fill"></div>
+				</div>
+				<div class="progress-text">Conferindo jogos...</div>
+				<div class="lote-info">
+					Lote atual: <span id="lote-atual">0</span> de <span id="total-lotes">0</span>
+					<br>
+					Concursos: <span id="concurso-atual">0</span> - <span id="concurso-fim">0</span>
+				</div>
+				<button id="btn-cancelar-conferencia" class="btn btn-danger">
+					Cancelar Conferência
+				</button>
+			</div>
+		</div>
 
         <div class="resultados">
             <h2>Resumo de acertos</h2>
