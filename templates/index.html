@@ -5,30 +5,338 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dia de Sorte Conferidor</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        :root {
+            /* Cores oficiais do Dia de Sorte */
+            --dia-sorte-verde: #00722E;
+            --dia-sorte-dourado: #D9B13B;
+            --dia-sorte-claro: #E6D089;
+            --dia-sorte-escuro: #005423;
+            --dia-sorte-bg: #F5F0E1;
+        }
+
+        body {
+            background-color: var(--dia-sorte-bg);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        h1 {
+            color: var(--dia-sorte-verde);
+            text-align: center;
+            margin-bottom: 20px;
+            font-weight: 700;
+        }
+        
+        /* Estilos do Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            overflow: auto;
+        }
+        
+        .modal-content {
+            background-color: white;
+            margin: 10% auto;
+            padding: 20px;
+            border-radius: 10px;
+            width: 80%;
+            max-width: 700px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+            animation: modalFadeIn 0.3s;
+        }
+        
+        .modal-header {
+            display: flex;
+            align-items: center;
+            padding-bottom: 15px;
+            border-bottom: 2px solid var(--dia-sorte-dourado);
+            margin-bottom: 15px;
+        }
+        
+        .modal-header i {
+            font-size: 24px;
+            color: var(--dia-sorte-dourado);
+            margin-right: 10px;
+        }
+        
+        .modal-header h2 {
+            color: var(--dia-sorte-verde);
+            margin: 0;
+        }
+        
+        .modal-body {
+            max-height: 60vh;
+            overflow-y: auto;
+            padding: 10px 0;
+        }
+        
+        .modal-footer {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+            text-align: right;
+        }
+        
+        .close-modal {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        
+        .close-modal:hover {
+            color: var(--dia-sorte-verde);
+        }
+        
+        .info-section {
+            margin-bottom: 20px;
+        }
+        
+        .info-section h3 {
+            color: var(--dia-sorte-verde);
+            margin-bottom: 10px;
+            font-size: 18px;
+        }
+        
+        .info-section ul {
+            list-style-type: none;
+            padding-left: 10px;
+        }
+        
+        .info-section ul li {
+            margin-bottom: 10px;
+            display: flex;
+            align-items: flex-start;
+        }
+        
+        .info-section ul li i {
+            color: var(--dia-sorte-dourado);
+            margin-right: 10px;
+            margin-top: 4px;
+        }
+        
+        .info-section ul ul {
+            margin-top: 10px;
+            margin-left: 25px;
+        }
+        
+        .info-section ul ul li {
+            margin-bottom: 5px;
+        }
+        
+        .btn-info {
+            background-color: var(--dia-sorte-verde);
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-weight: 600;
+            transition: background-color 0.2s;
+        }
+        
+        .btn-info:hover {
+            background-color: var(--dia-sorte-escuro);
+        }
+        
+        .btn-dourado {
+            background-color: var(--dia-sorte-dourado);
+            color: #333;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background-color 0.2s;
+        }
+        
+        .btn-dourado:hover {
+            background-color: var(--dia-sorte-claro);
+        }
+        
+        .info-banner {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        
+        @keyframes modalFadeIn {
+            from {opacity: 0; transform: translateY(-20px);}
+            to {opacity: 1; transform: translateY(0);}
+        }
+        
+        /* Adaptações para o tema do Dia de Sorte */
+        .volante {
+            background-color: var(--dia-sorte-bg);
+            border: 1px solid var(--dia-sorte-verde);
+        }
+        
+        .numero.selecionado {
+            background-color: var(--dia-sorte-verde);
+            border-color: var(--dia-sorte-verde);
+        }
+        
+        .mes.selecionado {
+            background-color: var(--dia-sorte-verde);
+            border-color: var(--dia-sorte-verde);
+        }
+        
+        .btn-azul {
+            background-color: var(--dia-sorte-verde);
+        }
+        
+        .btn-azul:hover {
+            background-color: var(--dia-sorte-escuro);
+        }
+        
+        .btn-roxo {
+            background-color: var(--dia-sorte-dourado);
+            color: #333;
+        }
+        
+        .btn-roxo:hover {
+            background-color: var(--dia-sorte-claro);
+        }
+        
+        .btn-verde {
+            background-color: var(--dia-sorte-verde);
+        }
+        
+        .btn-verde:hover {
+            background-color: var(--dia-sorte-escuro);
+        }
+        
+        .progress-bar-fill {
+            background-color: var(--dia-sorte-verde);
+        }
+        
+        /* Tabelas com as cores do Dia de Sorte */
+        .tabela-premios th {
+            background-color: var(--dia-sorte-verde);
+        }
+        
+        .card {
+            background-color: var(--dia-sorte-bg);
+            border: 1px solid var(--dia-sorte-dourado);
+        }
+        
+        .contagem {
+            color: var(--dia-sorte-verde);
+        }
+        
+        .resultado-header {
+            background-color: var(--dia-sorte-verde);
+        }
+        
+        /* Mostrar informações de dígitos no palpite */
+        .digitos-analise {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: var(--dia-sorte-bg);
+            border-radius: 5px;
+            display: none;
+        }
+        
+        .digitos-grid {
+            display: grid;
+            grid-template-columns: repeat(10, 1fr);
+            gap: 5px;
+            margin-top: 10px;
+        }
+        
+        .digito-tile {
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            font-weight: bold;
+            background-color: #e9e9e9;
+        }
+        
+        .digito-presente {
+            background-color: var(--dia-sorte-dourado);
+            color: #333;
+        }
+        
+        @media (max-width: 768px) {
+            .modal-content {
+                width: 95%;
+                margin: 5% auto;
+            }
+            
+            .digitos-grid {
+                grid-template-columns: repeat(5, 1fr);
+            }
+        }
+    </style>
 </head>
 <body>
+    <!-- Modal de Informações -->
+    <div id="info-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <div class="modal-header">
+                <i class="fas fa-info-circle"></i>
+                <h2>Informações Importantes</h2>
+            </div>
+            <div class="modal-body">
+                <div class="info-section">
+                    <h3>Para os Jogos:</h3>
+                    <ul>
+                        <li><i class="fas fa-check-circle"></i> Você pode carregar quantos jogos quiser (20 mil, 80 mil, 100 mil...)</li>
+                        <li><i class="fas fa-check-circle"></i> Não há limite para quantidade de jogos</li>
+                        <li><i class="fas fa-check-circle"></i> Todos os jogos serão verificados em cada lote</li>
+                    </ul>
+                </div>
+                <div class="info-section">
+                    <h3>Para os Concursos:</h3>
+                    <ul>
+                        <li><i class="fas fa-info-circle"></i> O sistema processa em lotes de 930 concursos</li>
+                        <li><i class="fas fa-info-circle"></i> Por exemplo, se você quiser verificar do concurso 1 até o último:
+                            <ul>
+                                <li>Lote 1: concursos 1-930</li>
+                                <li>Lote 2: concursos 931-1860</li>
+                                <li>E assim por diante...</li>
+                            </ul>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="modal-close-btn" class="btn btn-dourado">Entendi</button>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <h1>Conferidor Dia de Sorte</h1>
-
-        <h1>Informação importante!</h1>
-        <h2>Para os Jogos:</h2>
-        <ul>
-            <li>Você pode carregar quantos jogos quiser (20 mil, 80 mil, 100 mil...)</li>
-            <li>Não há limite para quantidade de jogos</li>
-            <li>Todos os jogos serão verificados em cada lote</li>
-        </ul>
-        <h2>Para os Concursos:</h2>
-        <ul>
-            <li>O sistema processa em lotes de 930 concursos</li>
-            <li>
-                Por exemplo, se você quiser verificar do concurso 1 até o último:
-                <ul>
-                    <li>Lote 1: concursos 1-930</li>
-                    <li>Lote 2: concursos 931-1860</li>
-                    <li>E assim por diante...</li>
-                </ul>
-            </li>
-        </ul>
+        <div class="info-banner">
+            <button id="open-info-modal" class="btn btn-info">
+                <i class="fas fa-info-circle"></i> Informações Importantes
+            </button>
+        </div>
 
         <div class="volante">
             <h2>Selecione 7 números</h2>
@@ -46,6 +354,17 @@
                     {% endfor %}
                 </div>
             </div>
+            
+			<!-- Análise de dígitos do palpite -->
+			<div class="digitos-analise" id="digitos-analise">
+				<h3>Análise de Dígitos</h3>
+				<p>Dígitos utilizados: <span id="contador-digitos">0</span> dígitos</p>
+				<div class="digitos-grid" id="digitos-grid">
+					{% for i in range(10) %}
+						<div class="digito-tile" id="digito-{{ i }}">{{ i }}</div>
+					{% endfor %}
+				</div>
+			</div>
         </div>
 
         <div class="drop-zone" id="drop-zone">
@@ -92,29 +411,22 @@
             </button>
         </div>
 
-		<!--
-        <div id="overlay" class="overlay" style="display: none;">
-            <div class="progress">
-                <div class="progress-bar"></div>
-                <div class="progress-text">Conferindo jogos...</div>
-                <button id="btn-cancelar-conferencia" class="btn-cancelar">
-                    Cancelar Conferência
-                </button>
-            </div>
-        </div>
-		-->
 		<div id="overlay" class="overlay" style="display: none;">
 			<div class="progress">
 				<h3>Processando Jogos</h3>
 				<div class="progress-bar">
 					<div class="progress-bar-fill" id="progress-fill"></div>
 				</div>
-				<div class="progress-text">Conferindo jogos...</div>
-				<div class="lote-info">
-					Lote atual: <span id="lote-atual">0</span> de <span id="total-lotes">0</span>
-					<br>
-					Concursos: <span id="concurso-atual">0</span> - <span id="concurso-fim">0</span>
+				<div class="progress-text">Preparando para processar jogos...</div>
+				<div id="lote-info" class="lote-info">
+					<div class="lote-atual">
+						Lote: <span id="lote-atual">0</span> de <span id="total-lotes">0</span>
+					</div>
+					<div class="concursos-range">
+						Concursos: <span id="concurso-atual">0</span> a <span id="concurso-fim">0</span>
+					</div>
 				</div>
+				<div id="progress-logs" class="progress-logs"></div>
 				<button id="btn-cancelar-conferencia" class="btn btn-danger">
 					Cancelar Conferência
 				</button>
@@ -131,7 +443,6 @@
                     <i class="fas fa-file-code"></i> HTML
                 </button>
             </div>
-
             <div class="cards">
                 <div class="card">
                     <h3>4 Acertos</h3>
@@ -165,8 +476,7 @@
 
             <div class="tabela-resumo">
                 <h2>Resumo dos Jogos Premiados</h2>
-                <!-- Continuarei o código no próximo trecho... -->
-				<div class="export-buttons hidden">
+                <div class="export-buttons hidden">
                     <button onclick="exportarDados('jogos-premiados', 'xlsx')" class="btn-export">
                         <i class="fas fa-file-excel"></i> Excel
                     </button>
@@ -175,31 +485,31 @@
                     </button>
                 </div>
                 <div class="tabela-container">
-                    <table class="tabela-premios">
-                        <thead>
-                            <tr>
-                                <th>Concurso</th>
-                                <th>Data</th>
-                                <th>Números Sorteados</th>
-                                <th>Mês Sorteado</th>
-                                <th>Seu Jogo</th>
-                                <th>Seu Mês</th>
-                                <th>Acertos</th>
-                                <th>Prêmio</th>
-                                <th>Status</th>
-                            </tr>
-                        </thead>
-                        <tbody id="tabela-resultados">
-                            <!-- Será preenchido via JavaScript -->
-                        </tbody>
-                        <tfoot id="tabela-totais">
-                            <tr>
-                                <td colspan="7"><strong>Total de Prêmios</strong></td>
-                                <td colspan="2" class="total-premios"></td>
-                            </tr>
-                        </tfoot>
-                    </table>
-                </div>
+				<table class="tabela-premios">
+					<thead>
+						<tr>
+							<th>Concurso</th>
+							<th>Data</th>
+							<th>Números Sorteados</th>
+							<th>Mês Sorteado</th>
+							<th>Seu Jogo</th>
+							<th>Seu Mês</th>
+							<th>Acertos</th>
+							<th>Dígitos Usados</th>
+							<th>Prêmio</th>
+							<th>Status</th>
+						</tr>
+					</thead>
+					<tbody id="tabela-resultados">
+						<!-- Será preenchido via JavaScript -->
+					</tbody>
+					<tfoot id="tabela-totais">
+						<tr>
+							<td colspan="8"><strong>Total de Prêmios</strong></td>
+							<td colspan="2" class="total-premios"></td>
+						</tr>
+					</tfoot>
+				</table>                </div>
             </div>
 
             <div class="jogos-mais-sorteados">

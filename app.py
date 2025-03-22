@@ -17,8 +17,10 @@ CONCURRENT_REQUESTS = 5  # Número máximo de requisições simultâneas
 BATCH_SIZE = 930        # Tamanho do lote de concursos
 RETRY_ATTEMPTS = 3      # Número de tentativas para cada requisição
 BASE_DELAY = 1         # Delay base em segundos para retry
-API_BASE_URL = "https://loteriascaixa-api.herokuapp.com/api"  # API principal
-# API_BASE_URL = "https://servicebus2.caixa.gov.br/portaldeloterias/api/diadesorte"  # API alternativa (comentada)
+# Altere a linha:
+# API_BASE_URL = "https://loteriascaixa-api.herokuapp.com/api"  # API principal
+API_BASE_URL = "https://servicebus2.caixa.gov.br/portaldeloterias/api"  # API alternativa (comentada)
+
 
 # Configurações do Flask
 FLASK_RUN_TIMEOUT = 900  # 15 minutos
@@ -41,6 +43,9 @@ MESES = [
     "JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
     "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"
 ]
+
+
+
 
 async def fetch_with_retry(session, url, max_retries=3):
     timeout = aiohttp.ClientTimeout(total=30)
@@ -80,6 +85,9 @@ async def gerar_numeros():
     mes = random.choice(MESES)
     return jsonify({'numeros': sorted(numeros), 'mes': mes})
 
+
+
+@app.route('/processar_arquivo', methods=['POST'])
 @app.route('/processar_arquivo', methods=['POST'])
 def processar_arquivo():
     if 'file' not in request.files:
@@ -98,10 +106,27 @@ def processar_arquivo():
                 content = file.read().decode('utf-8-sig')
                 for line in content.strip().split('\n'):
                     try:
-                        line = ''.join(c for c in line if c.isdigit() or c.isspace())
-                        numbers = [int(n) for n in line.strip().split()]
+                        # Divide a linha em números e possivelmente um mês
+                        partes = line.strip().split()
+                        
+                        # Extrai os números (primeiros 7 valores)
+                        numbers = []
+                        mes = None
+                        
+                        for i, parte in enumerate(partes):
+                            if i < 7:  # Primeiros 7 valores são números
+                                try:
+                                    num = int(parte)
+                                    if 1 <= num <= 31:
+                                        numbers.append(num)
+                                except ValueError:
+                                    continue
+                            else:  # O que vier depois pode ser o mês
+                                mes = normalizar_mes(parte)
+                                break
+                                
                         if len(numbers) == 7 and all(1 <= n <= 31 for n in numbers) and len(set(numbers)) == 7:
-                            jogos.append({'numeros': sorted(numbers), 'mes': None})
+                            jogos.append({'numeros': sorted(numbers), 'mes': mes})
                     except Exception as e:
                         logger.error(f"Erro na linha: {str(e)}")
                         continue
@@ -124,9 +149,8 @@ def processar_arquivo():
                         mes = None
                         if len(row) > 7:  # Se houver coluna para mês
                             try:
-                                mes = str(row.values[7]).upper()
-                                if mes not in MESES:
-                                    mes = None
+                                mes_valor = str(row.values[7])
+                                mes = normalizar_mes(mes_valor)
                             except:
                                 mes = None
                         jogos.append({'numeros': sorted(numbers), 'mes': mes})
@@ -144,13 +168,27 @@ def processar_arquivo():
     except Exception as e:
         logger.error(f"Erro geral: {str(e)}")
         return jsonify({'error': f'Erro ao processar arquivo: {str(e)}'}), 500
-        
+ 
+ 
 @app.route('/conferir', methods=['POST'])
 async def conferir():
     try:
         data = request.get_json()
         jogos = data['jogos']
         
+        # Validação de entrada
+        if not jogos or not isinstance(jogos, list):
+            return jsonify({
+                'error': 'Formato inválido: jogos deve ser uma lista não vazia',
+                'detail': 'Verifique o formato dos jogos enviados'
+            }), 400
+            
+        for jogo in jogos:
+            if 'numeros' not in jogo or len(jogo['numeros']) != 7:
+                return jsonify({
+                    'error': 'Formato inválido: cada jogo deve ter 7 números',
+                    'detail': 'Verifique se todos os jogos possuem 7 números'
+                }), 400
 
         # Pega os números dos concursos
         inicio = int(data.get('inicio', 1))
@@ -159,119 +197,54 @@ async def conferir():
         logger.info(f"\n{'='*50}")
         logger.info(f"Iniciando conferência com {len(jogos)} jogos")
         logger.info("Detalhes dos jogos a serem conferidos:")
-        for idx, jogo in enumerate(jogos, 1):
+        for idx, jogo in enumerate(jogos[:5], 1):  # Mostrar apenas os 5 primeiros para não sobrecarregar o log
             numeros_formatados = ', '.join(str(n).zfill(2) for n in sorted(jogo['numeros']))
             mes_info = f" | Mês: {jogo.get('mes', 'não informado')}" if jogo.get('mes') else ""
             logger.info(f"Jogo {idx}: [{numeros_formatados}]{mes_info}")
+        if len(jogos) > 5:
+            logger.info(f"... e mais {len(jogos) - 5} jogos")
         logger.info(f"{'='*50}\n")
         
         # Definição dos lotes de concursos
-        inicio = data.get('inicio', 1)
-        fim = data.get('fim', await obter_ultimo_concurso())
         logger.info(f"Faixa de concursos a verificar: {inicio} até {fim}")
         logger.info(f"Total de concursos a processar: {fim - inicio + 1}")
-
         
-        # Usa o novo processador em lotes
-        resultados = await processar_todos_jogos(inicio, fim, jogos)
-        return jsonify(resultados)
-        
+        # Usa o processador em lotes com tratamento de erros melhorado
+        try:
+            resultados = await processar_todos_jogos(inicio, fim, jogos)
+            return jsonify(resultados)
+        except Exception as e:
+            logger.error(f"Erro no processador de lotes: {str(e)}")
+            logger.exception("Stack trace completo:")
+            return jsonify({
+                'error': 'Erro ao processar jogos',
+                'message': str(e),
+                'detail': 'Erro durante o processamento dos lotes de concursos'
+            }), 500
 
+    except KeyError as e:
+        logger.error(f"Erro de campo obrigatório: {str(e)}")
+        return jsonify({
+            'error': 'Campo obrigatório ausente',
+            'message': f"Campo {str(e)} não encontrado no request",
+            'detail': 'Verifique se todos os campos obrigatórios estão presentes'
+        }), 400
+    except ValueError as e:
+        logger.error(f"Erro de valor: {str(e)}")
+        return jsonify({
+            'error': 'Valor inválido',
+            'message': str(e),
+            'detail': 'Verifique se os valores fornecidos estão no formato correto'
+        }), 400
     except Exception as e:
-        logger.error(f"Erro na conferência: {str(e)}")
+        logger.error(f"Erro geral na conferência: {str(e)}")
+        logger.exception("Stack trace completo:")
         return jsonify({
             'error': 'Erro ao processar jogos',
-            'message': str(e)
+            'message': str(e),
+            'detail': 'Ocorreu um erro inesperado durante o processamento'
         }), 500
 
-        logger.info("Iniciando processamento dos concursos...")
-        async with aiohttp.ClientSession() as session:
-            concursos_processados = 0
-            premios_encontrados = 0
-            
-            for concurso in range(inicio, fim + 1):
-                try:
-                    concursos_processados += 1
-                    logger.info(f"\nProcessando concurso {concurso} ({concursos_processados}/{fim - inicio + 1})")
-                    
-                    resultado = await fetch_with_retry(session, f"{API_BASE_URL}/diadesorte/{concurso}")
-                    
-                    if resultado and 'dezenas' in resultado:
-                        dezenas = [int(d) for d in resultado['dezenas']]
-                        mes_sorteado = resultado.get('mesDaSorte', '').upper()
-                        dezenas_formatadas = ', '.join(str(d).zfill(2) for d in sorted(dezenas))
-                        logger.info(f"Números sorteados: [{dezenas_formatadas}] | Mês: {mes_sorteado}")
-                        
-                        premios_concurso = 0
-                        for jogo in jogos:
-                            numeros = jogo['numeros']
-                            mes_jogado = jogo.get('mes')
-                            
-                            acertos = len(set(numeros) & set(dezenas))
-                            acertou_mes = mes_jogado and mes_jogado.upper() == mes_sorteado
-                            
-                            if acertos >= 4 or acertou_mes:
-                                premio = calcular_premio(resultado, acertos, acertou_mes)
-                                premios_concurso += 1
-                                premios_encontrados += 1
-                                
-                                numeros_formatados = ', '.join(str(n).zfill(2) for n in sorted(numeros))
-                                logger.info(f"  ✓ Prêmio encontrado!")
-                                logger.info(f"    Jogo: [{numeros_formatados}]")
-                                logger.info(f"    Acertos: {acertos}")
-                                if mes_jogado:
-                                    logger.info(f"    Mês jogado: {mes_jogado} - {'✓ ACERTOU!' if acertou_mes else '✗ não acertou'}")
-                                logger.info(f"    Prêmio: R$ {premio:.2f}")
-                                
-                                if acertos == 4: resultados_finais['resumo']['quatro'] += 1
-                                elif acertos == 5: resultados_finais['resumo']['cinco'] += 1
-                                elif acertos == 6: resultados_finais['resumo']['seis'] += 1
-                                elif acertos == 7: resultados_finais['resumo']['sete'] += 1
-                                if acertou_mes: resultados_finais['resumo']['mes'] += 1
-                                
-                                resultados_finais['resumo']['total_premios'] += premio
-                                
-                                resultados_finais['acertos'].append({
-                                    'concurso': resultado['concurso'],
-                                    'data': resultado['data'],
-                                    'numeros_sorteados': dezenas,
-                                    'mes_sorteado': mes_sorteado,
-                                    'seus_numeros': numeros,
-                                    'seu_mes': mes_jogado,
-                                    'acertos': acertos,
-                                    'acertou_mes': acertou_mes,
-                                    'premio': premio
-                                })
-                        
-                        if premios_concurso > 0:
-                            logger.info(f"  Total de prêmios no concurso {concurso}: {premios_concurso}")
-                
-                except Exception as e:
-                    logger.error(f"Erro processando concurso {concurso}: {str(e)}")
-                    continue
-                
-                await asyncio.sleep(0.1)  # Pequena pausa entre requisições
-        
-        logger.info(f"\n{'='*50}")
-        logger.info("Processamento concluído! Resumo final:")
-        logger.info(f"Total de concursos processados: {concursos_processados}")
-        logger.info(f"Total de prêmios encontrados: {premios_encontrados}")
-        logger.info("\nDistribuição dos acertos:")
-        logger.info(f"- 4 acertos: {resultados_finais['resumo']['quatro']}")
-        logger.info(f"- 5 acertos: {resultados_finais['resumo']['cinco']}")
-        logger.info(f"- 6 acertos: {resultados_finais['resumo']['seis']}")
-        logger.info(f"- 7 acertos: {resultados_finais['resumo']['sete']}")
-        logger.info(f"- Mês da Sorte: {resultados_finais['resumo']['mes']}")
-        logger.info(f"\nTotal em prêmios: R$ {resultados_finais['resumo']['total_premios']:.2f}")
-        logger.info(f"{'='*50}\n")
-        
-        return jsonify(resultados_finais)
-
-    except Exception as e:
-        logger.error(f"Erro na conferência geral: {str(e)}")
-        return jsonify({'error': 'Erro ao processar jogos', 'message': str(e)}), 500       
-        
-        
 
 def calcular_premio(resultado, acertos, acertou_mes=False):
     premio = 0
@@ -307,9 +280,41 @@ async def fetch_concurso_with_retry(session, concurso, max_retries=3, delay_base
             async with session.get(f"{API_BASE_URL}/diadesorte/{concurso}") as response:
                 if response.status == 200:
                     resultado = await response.json()
-                    if resultado and 'dezenas' in resultado:
-                        redis_config.set_cached_result(concurso, resultado)
-                        return resultado
+                    if resultado:
+                        # Verifica se a estrutura é da API principal ou alternativa
+                        if 'dezenas' in resultado:
+                            # Formato da API principal
+                            resultado_normalizado = {
+                                'concurso': resultado.get('concurso'),
+                                'data': resultado.get('data'),
+                                'dezenas': resultado.get('dezenas'),
+                                'mesDaSorte': resultado.get('mesDaSorte', ''),
+                                'premiacoes': resultado.get('premiacoes', [])
+                            }
+                        elif 'listaDezenas' in resultado:
+                            # Formato da API alternativa
+                            resultado_normalizado = {
+                                'concurso': resultado.get('numero'),
+                                'data': resultado.get('dataApuracao'),
+                                'dezenas': resultado.get('listaDezenas'),
+                                'mesDaSorte': resultado.get('nomeTimeCoracaoMesSorte', ''),
+                                'premiacoes': []
+                            }
+                            
+                            # Converter o formato de premiações
+                            if 'listaRateioPremio' in resultado:
+                                for premio in resultado['listaRateioPremio']:
+                                    resultado_normalizado['premiacoes'].append({
+                                        'descricao': premio.get('descricaoFaixa', ''),
+                                        'ganhadores': premio.get('numeroDeGanhadores', 0),
+                                        'valorPremio': premio.get('valorPremio', 0)
+                                    })
+                        else:
+                            # Formato desconhecido
+                            resultado_normalizado = resultado
+                        
+                        redis_config.set_cached_result(concurso, resultado_normalizado)
+                        return resultado_normalizado
                 
                 # Se chegou aqui, a resposta não foi válida
                 delay = delay_base * (2 ** attempt)  # Exponential backoff
@@ -410,6 +415,45 @@ def exportar_dados(tipo, formato):
     else:
         return jsonify({'error': 'Formato de exportação inválido'}), 400
 
+
+def normalizar_mes(mes_abreviado):
+    """Converte mês abreviado para o formato completo"""
+    meses_map = {
+        "JAN": "JANEIRO",
+        "FEV": "FEVEREIRO",
+        "MAR": "MARÇO", 
+        "ABR": "ABRIL",
+        "MAI": "MAIO",
+        "JUN": "JUNHO",
+        "JUL": "JULHO",
+        "AGO": "AGOSTO",
+        "SET": "SETEMBRO",
+        "OUT": "OUTUBRO",
+        "NOV": "NOVEMBRO",
+        "DEZ": "DEZEMBRO"
+    }
+    
+    if not mes_abreviado:
+        return None
+        
+    mes_upper = mes_abreviado.upper()
+    
+    # Se já for o nome completo
+    if mes_upper in [m.upper() for m in MESES]:
+        return mes_upper
+        
+    # Se for abreviado
+    if mes_upper in meses_map:
+        return meses_map[mes_upper]
+        
+    # Verifica se é uma abreviação de 3 letras para qualquer mês
+    for abrev, completo in meses_map.items():
+        if completo.upper().startswith(mes_upper):
+            return completo
+            
+    return mes_upper  # Retorna o que foi fornecido se não encontrar correspondência
+
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
+    #port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 500))
     app.run(host="0.0.0.0", port=port)

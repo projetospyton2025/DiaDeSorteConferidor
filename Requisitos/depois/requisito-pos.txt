@@ -1,1685 +1,4 @@
-#ESTRUTURA
- Diretório: J:\Meu DrIve\ProjetosPython\LoterIas\Conferidores\DiaDeSorteConferidor
-
-
-Mode                 LastWriteTime         Length Name
-----                 -------------         ------ ----
-d-----        16/02/2025     07:27                .git
-d-----        15/02/2025     13:33                .venv
-d-----        15/02/2025     13:34                __pycache__
-d-----        15/02/2025     13:34                Requisitos
-d-----        15/02/2025     13:34                static
-d-----        15/02/2025     13:34                templates
-d-----        15/02/2025     13:34                venv
-d-----        12/02/2025     19:43                .vscode
-d-----        13/02/2025     09:51                models
-------        12/02/2025     09:09           1096 LICENSE
-------        12/02/2025     09:09             22 README.md
-------        14/02/2025     06:22         368220 GeradorDeJogosDiaDeSorte.xlsm
-------        12/02/2025     09:12            213 .env
-------        12/02/2025     09:12            311 .gitignore
-------        14/02/2025     08:35          18803 app.py
-------        12/02/2025     09:12           2648 DiaDeSorteConferidor.ps1
-------        14/02/2025     06:22          99891 DS-5000.txt
-------        14/02/2025     06:10           8710 processador_lotes.py
-------        12/02/2025     09:40           3131 redis_config.py
-------        14/02/2025     06:11           4970 requerimentosLocal.txt
-------        13/02/2025     09:54           1053 requirements.txt
-------        16/02/2025     07:42        4388533 jogos-premiados(2).xlsx
-
-#app.py
-
-from flask import Flask, render_template, request, jsonify, send_file
-from processador_lotes import processar_todos_jogos
-from redis_config import redis_config
-from datetime import datetime
-from dotenv import load_dotenv
-import logging
-import random
-import aiohttp
-import asyncio
-import json
-import pandas as pd
-import io
-import os
-
-# Configurações globais para controle de requisições e processamento
-CONCURRENT_REQUESTS = 5  # Número máximo de requisições simultâneas
-BATCH_SIZE = 930        # Tamanho do lote de concursos
-RETRY_ATTEMPTS = 3      # Número de tentativas para cada requisição
-BASE_DELAY = 1         # Delay base em segundos para retry
-API_BASE_URL = "https://loteriascaixa-api.herokuapp.com/api"  # API principal
-# API_BASE_URL = "https://servicebus2.caixa.gov.br/portaldeloterias/api/diadesorte"  # API alternativa (comentada)
-
-# Configurações do Flask
-FLASK_RUN_TIMEOUT = 900  # 15 minutos
-CHUNK_SIZE = 1000        # Reduzido de 5000 para 1000
-CONCURSOS_PER_BATCH = 930  # Manter atual divisão de concursos
-MAX_CONCURRENT_REQUESTS = 5  # Reduzido de 10 para 5
-
-# Configuração de logs
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("Dia de Sorte Conferidor")
-
-
-# Carregar variáveis do .env
-load_dotenv()
-
-app = Flask(__name__)
-
-# Lista de meses para o Dia de Sorte
-MESES = [
-    "JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
-    "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"
-]
-
-async def fetch_with_retry(session, url, max_retries=3):
-    timeout = aiohttp.ClientTimeout(total=30)
-    for attempt in range(max_retries):
-        try:
-            async with session.get(url, timeout=timeout) as response:
-                if response.status == 200:
-                    return await response.json()
-                await asyncio.sleep(1)
-        except Exception as e:
-            logger.error(f"Tentativa {attempt + 1} falhou: {str(e)}")
-            if attempt == max_retries - 1:
-                return None
-            await asyncio.sleep(2 ** attempt)
-    return None
-
-async def get_latest_result():
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{API_BASE_URL}/diadesorte/latest") as response:
-                if response.status == 200:
-                    return await response.json()
-                return None
-    except Exception as e:
-        logger.error(f"Erro ao buscar último resultado: {str(e)}")
-        return None
-
-@app.route('/')
-async def index():
-    latest = await get_latest_result()
-    ultimo_concurso = latest['concurso'] if latest else 500  # valor padrão para Dia de Sorte
-    return render_template('index.html', ultimo_concurso=ultimo_concurso, meses=MESES)
-
-@app.route('/gerar_numeros')
-async def gerar_numeros():
-    numeros = random.sample(range(1, 32), 7)  # 7 números de 1 a 31
-    mes = random.choice(MESES)
-    return jsonify({'numeros': sorted(numeros), 'mes': mes})
-
-@app.route('/processar_arquivo', methods=['POST'])
-def processar_arquivo():
-    if 'file' not in request.files:
-        return jsonify({'error': 'Nenhum arquivo enviado'}), 400
-        
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
-
-    try:
-        jogos = []
-        logger.info(f"Processando arquivo: {file.filename}")
-        
-        if file.filename.endswith('.txt'):
-            try:
-                content = file.read().decode('utf-8-sig')
-                for line in content.strip().split('\n'):
-                    try:
-                        line = ''.join(c for c in line if c.isdigit() or c.isspace())
-                        numbers = [int(n) for n in line.strip().split()]
-                        if len(numbers) == 7 and all(1 <= n <= 31 for n in numbers) and len(set(numbers)) == 7:
-                            jogos.append({'numeros': sorted(numbers), 'mes': None})
-                    except Exception as e:
-                        logger.error(f"Erro na linha: {str(e)}")
-                        continue
-            except Exception as e:
-                logger.error(f"Erro no TXT: {str(e)}")
-                
-        elif file.filename.endswith(('.xlsx', '.xls')):
-            try:
-                df = pd.read_excel(file)
-                for _, row in df.iterrows():
-                    numbers = []
-                    for val in row.values[:7]:  # Primeiros 7 valores para números
-                        try:
-                            num = int(float(val))
-                            if 1 <= num <= 31:
-                                numbers.append(num)
-                        except:
-                            continue
-                    if len(numbers) == 7 and len(set(numbers)) == 7:
-                        mes = None
-                        if len(row) > 7:  # Se houver coluna para mês
-                            try:
-                                mes = str(row.values[7]).upper()
-                                if mes not in MESES:
-                                    mes = None
-                            except:
-                                mes = None
-                        jogos.append({'numeros': sorted(numbers), 'mes': mes})
-            except Exception as e:
-                logger.error(f"Erro no Excel: {str(e)}")
-        else:
-            return jsonify({'error': 'Use .txt ou .xlsx'}), 400
-
-        if not jogos:
-            return jsonify({'error': 'Nenhum jogo válido encontrado'}), 400
-
-        logger.info(f"Jogos processados: {len(jogos)}")
-        return jsonify({'jogos': jogos})
-
-    except Exception as e:
-        logger.error(f"Erro geral: {str(e)}")
-        return jsonify({'error': f'Erro ao processar arquivo: {str(e)}'}), 500
-        
-@app.route('/conferir', methods=['POST'])
-async def conferir():
-    try:
-        data = request.get_json()
-        jogos = data['jogos']
-        
-
-        # Pega os números dos concursos
-        inicio = int(data.get('inicio', 1))
-        fim = int(data.get('fim', await obter_ultimo_concurso()))
-
-        logger.info(f"\n{'='*50}")
-        logger.info(f"Iniciando conferência com {len(jogos)} jogos")
-        logger.info("Detalhes dos jogos a serem conferidos:")
-        for idx, jogo in enumerate(jogos, 1):
-            numeros_formatados = ', '.join(str(n).zfill(2) for n in sorted(jogo['numeros']))
-            mes_info = f" | Mês: {jogo.get('mes', 'não informado')}" if jogo.get('mes') else ""
-            logger.info(f"Jogo {idx}: [{numeros_formatados}]{mes_info}")
-        logger.info(f"{'='*50}\n")
-        
-        # Definição dos lotes de concursos
-        inicio = data.get('inicio', 1)
-        fim = data.get('fim', await obter_ultimo_concurso())
-        logger.info(f"Faixa de concursos a verificar: {inicio} até {fim}")
-        logger.info(f"Total de concursos a processar: {fim - inicio + 1}")
-
-        
-        # Usa o novo processador em lotes
-        resultados = await processar_todos_jogos(inicio, fim, jogos)
-        return jsonify(resultados)
-        
-
-    except Exception as e:
-        logger.error(f"Erro na conferência: {str(e)}")
-        return jsonify({
-            'error': 'Erro ao processar jogos',
-            'message': str(e)
-        }), 500
-
-        logger.info("Iniciando processamento dos concursos...")
-        async with aiohttp.ClientSession() as session:
-            concursos_processados = 0
-            premios_encontrados = 0
-            
-            for concurso in range(inicio, fim + 1):
-                try:
-                    concursos_processados += 1
-                    logger.info(f"\nProcessando concurso {concurso} ({concursos_processados}/{fim - inicio + 1})")
-                    
-                    resultado = await fetch_with_retry(session, f"{API_BASE_URL}/diadesorte/{concurso}")
-                    
-                    if resultado and 'dezenas' in resultado:
-                        dezenas = [int(d) for d in resultado['dezenas']]
-                        mes_sorteado = resultado.get('mesDaSorte', '').upper()
-                        dezenas_formatadas = ', '.join(str(d).zfill(2) for d in sorted(dezenas))
-                        logger.info(f"Números sorteados: [{dezenas_formatadas}] | Mês: {mes_sorteado}")
-                        
-                        premios_concurso = 0
-                        for jogo in jogos:
-                            numeros = jogo['numeros']
-                            mes_jogado = jogo.get('mes')
-                            
-                            acertos = len(set(numeros) & set(dezenas))
-                            acertou_mes = mes_jogado and mes_jogado.upper() == mes_sorteado
-                            
-                            if acertos >= 4 or acertou_mes:
-                                premio = calcular_premio(resultado, acertos, acertou_mes)
-                                premios_concurso += 1
-                                premios_encontrados += 1
-                                
-                                numeros_formatados = ', '.join(str(n).zfill(2) for n in sorted(numeros))
-                                logger.info(f"  ✓ Prêmio encontrado!")
-                                logger.info(f"    Jogo: [{numeros_formatados}]")
-                                logger.info(f"    Acertos: {acertos}")
-                                if mes_jogado:
-                                    logger.info(f"    Mês jogado: {mes_jogado} - {'✓ ACERTOU!' if acertou_mes else '✗ não acertou'}")
-                                logger.info(f"    Prêmio: R$ {premio:.2f}")
-                                
-                                if acertos == 4: resultados_finais['resumo']['quatro'] += 1
-                                elif acertos == 5: resultados_finais['resumo']['cinco'] += 1
-                                elif acertos == 6: resultados_finais['resumo']['seis'] += 1
-                                elif acertos == 7: resultados_finais['resumo']['sete'] += 1
-                                if acertou_mes: resultados_finais['resumo']['mes'] += 1
-                                
-                                resultados_finais['resumo']['total_premios'] += premio
-                                
-                                resultados_finais['acertos'].append({
-                                    'concurso': resultado['concurso'],
-                                    'data': resultado['data'],
-                                    'numeros_sorteados': dezenas,
-                                    'mes_sorteado': mes_sorteado,
-                                    'seus_numeros': numeros,
-                                    'seu_mes': mes_jogado,
-                                    'acertos': acertos,
-                                    'acertou_mes': acertou_mes,
-                                    'premio': premio
-                                })
-                        
-                        if premios_concurso > 0:
-                            logger.info(f"  Total de prêmios no concurso {concurso}: {premios_concurso}")
-                
-                except Exception as e:
-                    logger.error(f"Erro processando concurso {concurso}: {str(e)}")
-                    continue
-                
-                await asyncio.sleep(0.1)  # Pequena pausa entre requisições
-        
-        logger.info(f"\n{'='*50}")
-        logger.info("Processamento concluído! Resumo final:")
-        logger.info(f"Total de concursos processados: {concursos_processados}")
-        logger.info(f"Total de prêmios encontrados: {premios_encontrados}")
-        logger.info("\nDistribuição dos acertos:")
-        logger.info(f"- 4 acertos: {resultados_finais['resumo']['quatro']}")
-        logger.info(f"- 5 acertos: {resultados_finais['resumo']['cinco']}")
-        logger.info(f"- 6 acertos: {resultados_finais['resumo']['seis']}")
-        logger.info(f"- 7 acertos: {resultados_finais['resumo']['sete']}")
-        logger.info(f"- Mês da Sorte: {resultados_finais['resumo']['mes']}")
-        logger.info(f"\nTotal em prêmios: R$ {resultados_finais['resumo']['total_premios']:.2f}")
-        logger.info(f"{'='*50}\n")
-        
-        return jsonify(resultados_finais)
-
-    except Exception as e:
-        logger.error(f"Erro na conferência geral: {str(e)}")
-        return jsonify({'error': 'Erro ao processar jogos', 'message': str(e)}), 500       
-        
-        
-
-def calcular_premio(resultado, acertos, acertou_mes=False):
-    premio = 0
-    if 'premiacoes' in resultado:
-        for premiacao in resultado['premiacoes']:
-            if ((acertos == 7 and premiacao['descricao'] == '7 acertos') or
-                (acertos == 6 and premiacao['descricao'] == '6 acertos') or
-                (acertos == 5 and premiacao['descricao'] == '5 acertos') or
-                (acertos == 4 and premiacao['descricao'] == '4 acertos') or
-                (acertou_mes and premiacao['descricao'] == 'Mês da Sorte')):
-                premio += premiacao['valorPremio']
-    return premio
-
-async def obter_ultimo_concurso():
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{API_BASE_URL}/diadesorte/latest") as response:
-                if response.status ==200:
-                    latest = await response.json()
-                    return latest['concurso']
-                return 500  # Valor padrão se falhar
-    except Exception as e:
-        logger.error(f"Erro ao buscar último concurso: {str(e)}")
-        return 500  # Valor padrão
-
-async def fetch_concurso_with_retry(session, concurso, max_retries=3, delay_base=1):
-    for attempt in range(max_retries):
-        try:
-            cached = redis_config.get_cached_result(concurso)
-            if cached:
-                return cached
-
-            async with session.get(f"{API_BASE_URL}/diadesorte/{concurso}") as response:
-                if response.status == 200:
-                    resultado = await response.json()
-                    if resultado and 'dezenas' in resultado:
-                        redis_config.set_cached_result(concurso, resultado)
-                        return resultado
-                
-                # Se chegou aqui, a resposta não foi válida
-                delay = delay_base * (2 ** attempt)  # Exponential backoff
-                await asyncio.sleep(delay)
-                continue
-                
-        except Exception as e:
-            logger.error(f"Tentativa {attempt + 1} falhou para concurso {concurso}: {str(e)}")
-            if attempt < max_retries - 1:
-                delay = delay_base * (2 ** attempt)
-                await asyncio.sleep(delay)
-            else:
-                logger.error(f"Todas as tentativas falharam para concurso {concurso}")
-                return None
-    return None
-
-def atualizar_estatisticas_jogo(jogos_stats, jogo, dezenas, mes_sorteado):
-    jogo_key = tuple(sorted(jogo['numeros']))
-    acertos = len(set(jogo['numeros']) & set(dezenas))
-    acertou_mes = jogo.get('mes') and jogo['mes'].upper() == mes_sorteado
-    
-    if jogo_key not in jogos_stats:
-        jogos_stats[jogo_key] = {
-            'numeros': list(jogo_key),
-            'total': 0,
-            'distribuicao': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0},
-            'acertos_mes': 0
-        }
-    
-    jogos_stats[jogo_key]['total'] += 1
-    jogos_stats[jogo_key]['distribuicao'][acertos] += 1
-    if acertou_mes:
-        jogos_stats[jogo_key]['acertos_mes'] += 1
-
-    return jogos_stats
-
-@app.route('/exportar/<tipo>/<formato>', methods=['POST'])
-def exportar_dados(tipo, formato):
-    data = request.get_json()
-    
-    if tipo == 'resumo-acertos':
-        df = pd.DataFrame({
-            'Quantidade de Acertos': ['4 acertos', '5 acertos', '6 acertos', '7 acertos', 'Mês da Sorte'],
-            'Total': [
-                data['resumo']['quatro'],
-                data['resumo']['cinco'],
-                data['resumo']['seis'],
-                data['resumo']['sete'],
-                data['resumo']['mes']
-            ],
-            'Prêmio Total': [
-                sum(r['premio'] for r in data['acertos'] if r['acertos'] == 4),
-                sum(r['premio'] for r in data['acertos'] if r['acertos'] == 5),
-                sum(r['premio'] for r in data['acertos'] if r['acertos'] == 6),
-                sum(r['premio'] for r in data['acertos'] if r['acertos'] == 7),
-                sum(r['premio'] for r in data['acertos'] if r['acertou_mes'])
-            ]
-        })
-    
-    elif tipo == 'jogos-premiados':
-        df = pd.DataFrame([{
-            'Concurso': r['concurso'],
-            'Data': r['data'],
-            'Números Sorteados': ' '.join(str(n) for n in r['numeros_sorteados']),
-            'Mês Sorteado': r['mes_sorteado'],
-            'Seus Números': ' '.join(str(n) for n in r['seus_numeros']),
-            'Seu Mês': r['seu_mes'] or '',
-            'Acertos': r['acertos'],
-            'Acertou Mês': 'Sim' if r['acertou_mes'] else 'Não',
-            'Prêmio': r['premio']
-        } for r in data['acertos']])
-    
-    elif tipo == 'jogos-sorteados':
-        if 'jogos_stats' in data:
-            df = pd.DataFrame([{
-                'Números': ' '.join(str(n) for n in jogo['numeros']),
-                'Total de Acertos': jogo['total'],
-                'Distribuição': ', '.join(f"{p} pontos: {v}x" for p, v in jogo['distribuicao'].items() if v > 0),
-                'Acertos do Mês': jogo.get('acertos_mes', 0)
-            } for jogo in data['jogos_stats']])
-        else:
-            return jsonify({'error': 'Dados de estatísticas não disponíveis'}), 400
-    else:
-        return jsonify({'error': 'Tipo de exportação inválido'}), 400
-
-    if formato == 'xlsx':
-        output = io.BytesIO()
-        df.to_excel(output, index=False)
-        output.seek(0)
-        return send_file(
-            output,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name=f"{tipo}.xlsx"
-        )
-    elif formato == 'html':
-        return df.to_html(classes='table table-striped', index=False)
-    else:
-        return jsonify({'error': 'Formato de exportação inválido'}), 400
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-	
-	
-	#processador-lotes.py
-	from flask import Flask, jsonify
-import aiohttp
-import asyncio
-import logging
-from typing import List, Dict, Any
-import time
-
-# Configuração do logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("ProcessadorLotes")
-
-class ProcessadorLotes:
-    def __init__(self, tamanho_lote: int = 930, max_concurrent: int = 5):
-        """
-        Inicializa o processador de lotes
-        
-        Args:
-            tamanho_lote: Tamanho de cada lote (padrão: 930)
-            max_concurrent: Número máximo de requisições simultâneas (padrão: 5)
-        """
-        self.tamanho_lote = tamanho_lote
-        self.max_concurrent = max_concurrent
-        self.session = None
-        self.api_base_url = "https://loteriascaixa-api.herokuapp.com/api"
-    
-    async def __aenter__(self):
-        """Inicializa a sessão HTTP"""
-        self.session = aiohttp.ClientSession()
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Fecha a sessão HTTP"""
-        if self.session:
-            await self.session.close()
-    
-    async def buscar_com_retry(self, concurso: int, max_tentativas: int = 3) -> Dict:
-        """
-        Busca um resultado específico com tentativas em caso de falha
-        
-        Args:
-            concurso: Número do concurso
-            max_tentativas: Número máximo de tentativas
-            
-        Returns:
-            Dict com o resultado ou None em caso de falha
-        """
-        for tentativa in range(max_tentativas):
-            try:
-                async with self.session.get(
-                    f"{self.api_base_url}/diadesorte/{concurso}",
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"Tentativa {tentativa + 1} falhou para concurso {concurso}: {str(e)}")
-                if tentativa == max_tentativas - 1:
-                    return None
-                await asyncio.sleep(2 ** tentativa)
-        return None
-
-    async def processar_lote(self, inicio: int, fim: int, jogos: List[Dict]) -> List[Dict]:
-        """
-        Processa um lote de resultados
-        
-        Args:
-            inicio: Número do primeiro concurso
-            fim: Número do último concurso
-            jogos: Lista de jogos para conferir
-            
-        Returns:
-            Lista de resultados processados
-        """
-        tarefas = []
-        resultados = []
-        
-        # Cria tarefas para busca concorrente
-        for concurso in range(inicio, min(fim + 1, inicio + self.tamanho_lote)):
-            tarefa = asyncio.create_task(self.buscar_com_retry(concurso))
-            tarefas.append((concurso, tarefa))
-            
-            # Se atingiu o máximo de tarefas concorrentes, espera algumas completarem
-            if len(tarefas) >= self.max_concurrent:
-                completadas = await self.processar_chunk_tarefas(tarefas[:self.max_concurrent], jogos)
-                resultados.extend(completadas)
-                tarefas = tarefas[self.max_concurrent:]
-        
-        # Processa tarefas restantes
-        if tarefas:
-            completadas = await self.processar_chunk_tarefas(tarefas, jogos)
-            resultados.extend(completadas)
-        
-        return resultados
-
-    async def processar_chunk_tarefas(self, tarefas: List[tuple], jogos: List[Dict]) -> List[Dict]:
-        """
-        Processa um conjunto de tarefas e confere contra os jogos
-        
-        Args:
-            tarefas: Lista de tuplas (concurso, tarefa)
-            jogos: Lista de jogos para conferir
-            
-        Returns:
-            Lista de resultados processados
-        """
-        resultados = []
-        for concurso, tarefa in tarefas:
-            try:
-                resultado = await tarefa
-                if resultado and 'dezenas' in resultado:
-                    # Processa cada jogo contra este resultado
-                    resultados_processados = self.conferir_jogos_contra_resultado(jogos, resultado)
-                    resultados.extend(resultados_processados)
-            except Exception as e:
-                logger.error(f"Erro processando concurso {concurso}: {str(e)}")
-        return resultados
-
-    def conferir_jogos_contra_resultado(self, jogos: List[Dict], resultado: Dict) -> List[Dict]:
-        """
-        Confere jogos contra um resultado específico
-        
-        Args:
-            jogos: Lista de jogos para conferir
-            resultado: Resultado do concurso
-            
-        Returns:
-            Lista de acertos encontrados
-        """
-        acertos = []
-        dezenas = [int(d) for d in resultado['dezenas']]
-        mes_sorteado = resultado.get('mesDaSorte', '').upper()
-        
-        for jogo in jogos:
-            numeros = jogo['numeros']
-            mes_jogado = jogo.get('mes', '').upper() if jogo.get('mes') else None
-            
-            acertos_numeros = len(set(numeros) & set(dezenas))
-            acertou_mes = mes_jogado and mes_jogado == mes_sorteado
-            
-            if acertos_numeros >= 4 or acertou_mes:
-                premio = self.calcular_premio(resultado, acertos_numeros, acertou_mes)
-                acertos.append({
-                    'concurso': resultado['concurso'],
-                    'data': resultado['data'],
-                    'numeros_sorteados': dezenas,
-                    'mes_sorteado': mes_sorteado,
-                    'seus_numeros': numeros,
-                    'seu_mes': mes_jogado,
-                    'acertos': acertos_numeros,
-                    'acertou_mes': acertou_mes,
-                    'premio': premio
-                })
-                
-        return acertos
-
-    def calcular_premio(self, resultado: Dict, acertos: int, acertou_mes: bool = False) -> float:
-        """
-        Calcula o prêmio baseado nos acertos
-        
-        Args:
-            resultado: Resultado do concurso
-            acertos: Número de acertos
-            acertou_mes: Se acertou o mês
-            
-        Returns:
-            Valor do prêmio
-        """
-        premio = 0
-        if 'premiacoes' in resultado:
-            for premiacao in resultado['premiacoes']:
-                if ((acertos == 7 and premiacao['descricao'] == '7 acertos') or
-                    (acertos == 6 and premiacao['descricao'] == '6 acertos') or
-                    (acertos == 5 and premiacao['descricao'] == '5 acertos') or
-                    (acertos == 4 and premiacao['descricao'] == '4 acertos') or
-                    (acertou_mes and premiacao['descricao'] == 'Mês da Sorte')):
-                    premio += premiacao['valorPremio']
-        return premio
-
-async def processar_todos_jogos(inicio: int, fim: int, jogos: List[Dict]) -> Dict:
-    """
-    Processa todos os jogos em lotes
-    
-    Args:
-        inicio: Primeiro concurso
-        fim: Último concurso
-        jogos: Lista de jogos para conferir
-        
-    Returns:
-        Dicionário com resultados e estatísticas
-    """
-    async with ProcessadorLotes() as processador:
-        todos_resultados = []
-        for i in range(inicio, fim + 1, processador.tamanho_lote):
-            lote_fim = min(i + processador.tamanho_lote - 1, fim)
-            logger.info(f"Processando lote de concursos {i} até {lote_fim}")
-            
-            resultados_lote = await processador.processar_lote(i, lote_fim, jogos)
-            todos_resultados.extend(resultados_lote)
-            
-            # Pequena pausa entre lotes para evitar sobrecarga
-            await asyncio.sleep(1)
-        
-        return {
-            'acertos': todos_resultados,
-            'resumo': calcular_resumo(todos_resultados)
-        }
-
-def calcular_resumo(resultados: List[Dict]) -> Dict:
-    """
-    Calcula o resumo dos resultados
-    
-    Args:
-        resultados: Lista de resultados
-        
-    Returns:
-        Dicionário com resumo dos acertos e prêmios
-    """
-    return {
-        'quatro': sum(1 for r in resultados if r['acertos'] == 4),
-        'cinco': sum(1 for r in resultados if r['acertos'] == 5),
-        'seis': sum(1 for r in resultados if r['acertos'] == 6),
-        'sete': sum(1 for r in resultados if r['acertos'] == 7),
-        'mes': sum(1 for r in resultados if r['acertou_mes']),
-        'total_premios': sum(r['premio'] for r in resultados)
-    }
-	
-	#redis_config.py
-	import redis
-import os
-from typing import Optional
-import logging
-import json
-from ast import literal_eval
-from dotenv import load_dotenv
-
-# Carrega as variáveis do arquivo .env
-load_dotenv()
-
-class RedisConfig:
-    def __init__(self):
-        self.logger = self._setup_logger()
-        self.redis_client = self._initialize_redis()
-        self.CACHE_EXPIRATION = 60 * 60 * 24  # 24 horas
-
-    def _setup_logger(self) -> logging.Logger:
-        logger = logging.getLogger('RedisConfig')
-        logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        return logger
-
-    def _initialize_redis(self) -> Optional[redis.Redis]:
-        try:
-            redis_url = os.getenv("REDIS_URL")
-            if redis_url:  # Prioridade para a URL completa, se definida
-                client = redis.from_url(redis_url)
-                client.ping()
-                self.logger.info("Conectado ao Redis via URL")
-                return client
-            else:
-                # Conexão usando host, port e senha individuais
-                client = redis.Redis(
-                    host=os.getenv('REDIS_HOST'),
-                    port=int(os.getenv('REDIS_PORT')),
-                    password=os.getenv('REDIS_PASSWORD'),
-                    db=int(os.getenv('REDIS_DB', 0)),
-                    decode_responses=True,
-                    socket_timeout=5,
-                    retry_on_timeout=True
-                )
-                client.ping()
-                self.logger.info("Conectado ao Redis via parâmetros")
-                return client
-        except Exception as e:
-            self.logger.error(f"A conexão com o Redis falhou: {str(e)}")
-            return None
-
-    def get_cached_result(self, concurso: int) -> Optional[dict]:
-        if not self.redis_client:
-            return None
-
-        try:
-            cached = self.redis_client.get(f"diadesorte:{concurso}")
-            if not cached:
-                return None
-            try:
-                return json.loads(cached)
-            except:
-                try:
-                    return literal_eval(cached)
-                except:
-                    return None
-        except Exception as e:
-            self.logger.error(f"Erro ao recuperar cache para concurso {concurso}: {str(e)}")
-            return None
-
-    def set_cached_result(self, concurso: int, data: dict) -> bool:
-        if not self.redis_client:
-            return False
-
-        try:
-            serialized = json.dumps(data, ensure_ascii=False)
-            self.redis_client.setex(
-                f"diadesorte:{concurso}",
-                self.CACHE_EXPIRATION,
-                serialized
-            )
-            return True
-        except Exception as e:
-            self.logger.error(f"Erro ao armazenar cache para concurso {concurso}: {str(e)}")
-            return False
-
-redis_config = RedisConfig()
-
-#main.js
-// Variáveis globais
-const jogosIncluidos = [];
-const jogosSelecionados = new Set();
-const numerosSelecionados = new Set();  // Adicionada aqui como global
-let conferenciaCancelada = false;
-let dadosUltimaConsulta = null;
-let mesSelecionado = null;
-
-// Configuração tamanho do lote
-const TAMANHO_LOTE = 930;
-
-// Função para atualizar o contador e mensagem
-function atualizarContadorJogos() {
-    const quantidade = jogosIncluidos.length;
-    const contadorElement = document.getElementById('contador-jogos');
-    if (contadorElement) {
-        contadorElement.textContent = quantidade;
-    }
-
-    const tituloJogos = document.querySelector('.jogos-incluidos h3');
-    if (tituloJogos) {
-        tituloJogos.textContent = `Jogos Incluídos (${quantidade} ${quantidade === 1 ? 'jogo' : 'jogos'})`;
-    }
-}
-
-// Função para formatar mensagens de jogos
-function formatarMensagemJogos(quantidade, acao) {
-    if (acao === 'incluir') {
-        return `${quantidade} jogo${quantidade === 1 ? ' foi incluído' : 's foram incluídos'} com sucesso!`;
-    } else if (acao === 'remover') {
-        return `${quantidade} jogo${quantidade === 1 ? ' foi removido' : 's foram removidos'} com sucesso!`;
-    }
-    return '';
-}
-
-// Funções de Drag and Drop
-function setupDragAndDrop() {
-    const dropZone = document.getElementById('drop-zone');
-    const fileInput = document.getElementById('file-input');
-    dropZone.onclick = () => fileInput.click();
-    
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-        dropZone.addEventListener(eventName, preventDefaults);
-    });
-    
-    ['dragenter', 'dragover'].forEach(eventName => {
-        dropZone.addEventListener(eventName, () => {
-            dropZone.classList.add('dragover');
-        });
-    });
-    
-    ['dragleave', 'drop'].forEach(eventName => {
-        dropZone.addEventListener(eventName, () => {
-            dropZone.classList.remove('dragover');
-        });
-    });
-    
-    dropZone.addEventListener('drop', handleDrop);
-    fileInput.addEventListener('change', handleFileSelect);
-
-	// Dentro da função setupDragAndDrop:
-    // Configuração dos números
-    const numeros = document.querySelectorAll('.numero');
-    numeros.forEach(numero => {
-        numero.addEventListener('click', () => {
-            const num = parseInt(numero.dataset.numero);
-            if (numero.classList.contains('selecionado')) {
-                numero.classList.remove('selecionado');
-                numerosSelecionados.delete(num);
-            } else if (numerosSelecionados.size < 7) {  // Alterado de 6 para 7 para o Dia de Sorte
-                numero.classList.add('selecionado');
-                numerosSelecionados.add(num);
-            } else {
-                alert('Você já selecionou 7 números!');  // Adicionado alerta
-            }
-            console.log('Números selecionados:', Array.from(numerosSelecionados));  // Debug
-        });
-    });
-
-    // Configuração dos meses
-    const meses = document.querySelectorAll('.mes');
-    meses.forEach(mes => {
-        mes.addEventListener('click', () => {
-            const mesValor = mes.dataset.mes;
-            meses.forEach(m => m.classList.remove('selecionado'));
-            if (mesValor === mesSelecionado) {
-                mesSelecionado = null;
-            } else {
-                mes.classList.add('selecionado');
-                mesSelecionado = mesValor;
-            }
-        });
-    });
-}
-function preventDefaults(e) {
-    e.preventDefault();
-    e.stopPropagation();
-}
-
-async function handleDrop(e) {
-    const file = e.dataTransfer.files[0];
-    await processFile(file);
-}
-
-async function handleFileSelect(e) {
-    const file = e.target.files[0];
-    await processFile(file);
-}
-
-async function processFile(file) {
-    if (!file) return;
-
-    const dropZone = document.getElementById('drop-zone');
-    dropZone.classList.add('processing');
-
-    try {
-        const formData = new FormData();
-        formData.append('file', file);
-
-        const response = await fetch('/processar_arquivo', {
-            method: 'POST',
-            body: formData
-        });
-
-        if (!response.ok) {
-            const errorData = await response.text();
-            throw new Error(errorData);
-        }
-
-        const data = await response.json();
-        
-        if (data.jogos && data.jogos.length > 0) {
-            const jogosAtuais = new Set(jogosIncluidos.map(j => JSON.stringify(j)));
-            let jogosNovos = 0;
-
-            data.jogos.forEach(jogo => {
-                const jogoStr = JSON.stringify(jogo);
-                if (!jogosAtuais.has(jogoStr)) {
-                    jogosIncluidos.push(jogo);
-                    adicionarJogoNaLista(jogo);
-                    jogosAtuais.add(jogoStr);
-                    jogosNovos++;
-                }
-            });
-
-            atualizarContadorJogos();
-            alert(formatarMensagemJogos(jogosNovos, 'incluir'));
-        } else {
-            throw new Error('Nenhum jogo válido encontrado');
-        }
-    } catch (error) {
-        console.error('Erro detalhado:', error);
-        alert(`Erro ao processar arquivo: ${error.message}`);
-    } finally {
-        dropZone.classList.remove('processing');
-    }
-}
-
-// Funções de manipulação de jogos
-function adicionarJogoNaLista(jogo) {
-    const jogoItem = document.createElement('div');
-    jogoItem.className = 'jogo-item';
-
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.className = 'jogo-checkbox';
-    checkbox.onclick = (e) => {
-        const jogoStr = JSON.stringify(jogo);
-        if (e.target.checked) {
-            jogosSelecionados.add(jogoStr);
-            jogoItem.classList.add('selecionado');
-        } else {
-            jogosSelecionados.delete(jogoStr);
-            jogoItem.classList.remove('selecionado');
-        }
-        atualizarBotoesSeleção();
-    };
-
-    const jogoNumeros = document.createElement('div');
-    jogoNumeros.className = 'jogo-numeros';
-    
-    // Números do jogo
-    jogo.numeros.forEach(num => {
-        const numeroSpan = document.createElement('span');
-        numeroSpan.className = 'jogo-numero';
-        numeroSpan.textContent = String(num).padStart(2, '0');
-        jogoNumeros.appendChild(numeroSpan);
-    });
-
-    // Mês, se houver
-    if (jogo.mes) {
-        const mesSpan = document.createElement('span');
-        mesSpan.className = 'jogo-mes';
-        mesSpan.textContent = `| ${jogo.mes}`;
-        jogoNumeros.appendChild(mesSpan);
-    }
-
-    const btnRemover = document.createElement('button');
-    btnRemover.className = 'btn-remover';
-    btnRemover.textContent = 'Remover';
-    btnRemover.onclick = () => removerJogo(jogo, jogoItem);
-
-    jogoItem.appendChild(checkbox);
-    jogoItem.appendChild(jogoNumeros);
-    jogoItem.appendChild(btnRemover);
-    document.getElementById('lista-jogos').appendChild(jogoItem);
-}
-
-function removerJogo(jogo, jogoItem) {
-    const index = jogosIncluidos.findIndex(j =>
-        JSON.stringify(j) === JSON.stringify(jogo)
-    );
-    if (index !== -1) {
-        jogosIncluidos.splice(index, 1);
-        jogosSelecionados.delete(JSON.stringify(jogo));
-        jogoItem.remove();
-        atualizarBotoesSeleção();
-        atualizarContadorJogos();
-        alert(formatarMensagemJogos(1, 'remover'));
-    }
-}
-
-function limparTodosJogos() {
-    const quantidadeAtual = jogosIncluidos.length;
-    if (quantidadeAtual === 0) {
-        alert('Não há jogos para remover');
-        return;
-    }
-
-    if (confirm('Tem certeza que deseja remover todos os jogos?')) {
-        jogosIncluidos.length = 0;
-        jogosSelecionados.clear();
-        document.getElementById('lista-jogos').innerHTML = '';
-        atualizarBotoesSeleção();
-        atualizarContadorJogos();
-        alert(formatarMensagemJogos(quantidadeAtual, 'remover'));
-    }
-}
-
-function removerJogosSelecionados() {
-    if (jogosSelecionados.size === 0) {
-        alert('Selecione pelo menos um jogo para remover');
-        return;
-    }
-
-    const quantidadeRemover = jogosSelecionados.size;
-    if (confirm(`Deseja remover ${quantidadeRemover} jogo${quantidadeRemover === 1 ? '' : 's'} selecionado${quantidadeRemover === 1 ? '' : 's'}?`)) {
-        jogosSelecionados.forEach(jogoStr => {
-            const jogo = JSON.parse(jogoStr);
-            const index = jogosIncluidos.findIndex(j =>
-                JSON.stringify(j) === jogoStr
-            );
-            if (index !== -1) {
-                jogosIncluidos.splice(index, 1);
-            }
-        });
-
-        document.querySelectorAll('.jogo-checkbox:checked').forEach(checkbox => {
-            checkbox.closest('.jogo-item').remove();
-        });
-
-        jogosSelecionados.clear();
-        atualizarBotoesSeleção();
-        atualizarContadorJogos();
-        alert(formatarMensagemJogos(quantidadeRemover, 'remover'));
-    }
-}
-
-function atualizarBotoesSeleção() {
-    const removerSelecionadosBtn = document.getElementById('btn-remover-selecionados');
-    if (removerSelecionadosBtn) {
-        removerSelecionadosBtn.disabled = jogosSelecionados.size === 0;
-    }
-}
-// Funções de exportação
-function toggleBotoesExportacao(mostrar) {
-    document.querySelectorAll('.export-buttons').forEach(div => {
-        if (mostrar) {
-            div.classList.remove('hidden');
-        } else {
-            div.classList.add('hidden');
-        }
-    });
-}
-
-async function exportarDados(tipo, formato) {
-    if (!dadosUltimaConsulta) {
-        alert('Faça uma consulta primeiro antes de exportar os dados.');
-        return;
-    }
-
-    try {
-        const response = await fetch(`/exportar/${tipo}/${formato}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(dadosUltimaConsulta)
-        });
-
-        if (!response.ok) {
-            throw new Error('Erro ao exportar dados');
-        }
-
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${tipo}.${formato}`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-
-    } catch (error) {
-        console.error('Erro:', error);
-        alert('Erro ao exportar os dados. Tente novamente.');
-    }
-}
-
-// Funções de atualização de interface
-function atualizarTabelaJogosSorteados(jogos_stats) {
-    const tbody = document.querySelector('#tabela-jogos-sorteados tbody');
-    tbody.innerHTML = '';
-
-    jogos_stats.forEach(jogo => {
-        const tr = document.createElement('tr');
-        
-        const tdJogo = document.createElement('td');
-        tdJogo.innerHTML = `<div class="numeros-tabela">
-            ${jogo.numeros.map(n => 
-                `<span class="numero-tabela">${String(n).padStart(2, '0')}</span>`
-            ).join('')}
-        </div>`;
-        
-        const tdTotal = document.createElement('td');
-        tdTotal.textContent = `${jogo.total} vezes`;
-        
-        const tdDistribuicao = document.createElement('td');
-        const distribuicao = [];
-        for (let i = 1; i <= 7; i++) {
-            if (jogo.distribuicao[i] > 0) {
-                distribuicao.push(
-                    `<span class="distribuicao-badge">
-                        ${i} ponto${i !== 1 ? 's' : ''}: ${jogo.distribuicao[i]} vez${jogo.distribuicao[i] !== 1 ? 'es' : ''}
-                    </span>`
-                );
-            }
-        }
-        tdDistribuicao.innerHTML = distribuicao.join(' ');
-
-        const tdMes = document.createElement('td');
-        tdMes.textContent = jogo.acertos_mes > 0 ? `${jogo.acertos_mes} vezes` : '-';
-        
-        tr.appendChild(tdJogo);
-        tr.appendChild(tdTotal);
-        tr.appendChild(tdDistribuicao);
-        tr.appendChild(tdMes);
-        tbody.appendChild(tr);
-    });
-}
-
-function atualizarDetalhesETabela(data) {
-    const detalhesDiv = document.getElementById('detalhes-resultados');
-    const tabelaBody = document.getElementById('tabela-resultados');
-    
-    detalhesDiv.innerHTML = '';
-    tabelaBody.innerHTML = '';
-
-    data.acertos.forEach(resultado => {
-        // Adicionar na seção de detalhes
-        const resultadoDiv = document.createElement('div');
-        resultadoDiv.className = 'resultado-item';
-        resultadoDiv.innerHTML = `
-            <div class="resultado-header">
-                <h3>Concurso ${resultado.concurso} - ${resultado.data}</h3>
-            </div>
-            <div class="resultado-numeros">
-                <div class="numeros-sorteados">
-                    <h4>Números Sorteados:</h4>
-                    <div class="numeros-lista">
-                        ${resultado.numeros_sorteados
-                            .sort((a, b) => a - b)
-                            .map(n => `<span class="numero-sorteado">${String(n).padStart(2, '0')}</span>`)
-                            .join(' ')}
-                    </div>
-                    <p>Mês da Sorte: ${resultado.mes_sorteado}</p>
-                </div>
-                <div class="seu-jogo">
-                    <h4>Seu Jogo:</h4>
-                    <div class="numeros-lista">
-                        ${resultado.seus_numeros
-                            .sort((a, b) => a - b)
-                            .map(n => `<span class="numero-jogado ${resultado.numeros_sorteados.includes(n) ? 'acerto' : ''}">${String(n).padStart(2, '0')}</span>`)
-                            .join(' ')}
-                    </div>
-                    ${resultado.seu_mes ? `<p>Seu Mês: ${resultado.seu_mes} ${resultado.acertou_mes ? '(Acertou!)' : ''}</p>` : ''}
-                </div>
-                <div class="resultado-info">
-                    <p class="acertos-info">Acertos: <strong>${resultado.acertos}</strong></p>
-                    ${resultado.premio > 0 ? 
-                        `<p class="premio-info">Prêmio: <strong>R$ ${resultado.premio.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong></p>` 
-                        : ''}
-                </div>
-            </div>
-        `;
-        detalhesDiv.appendChild(resultadoDiv);
-
-        // Adicionar na tabela
-        const row = document.createElement('tr');
-        const numerosSorteados = resultado.numeros_sorteados
-            .sort((a, b) => a - b)
-            .map(n => `<span class="numero-tabela">${String(n).padStart(2, '0')}</span>`)
-            .join('');
-        const seusNumeros = resultado.seus_numeros
-            .sort((a, b) => a - b)
-            .map(n => `<span class="numero-tabela ${resultado.numeros_sorteados.includes(n) ? 'acerto' : ''}">${String(n).padStart(2, '0')}</span>`)
-            .join('');
-        const premioText = resultado.premio > 0 
-            ? `R$ ${resultado.premio.toLocaleString('pt-BR', {minimumFractionDigits: 2})}` 
-            : 'Não houve ganhadores';
-
-        row.innerHTML = `
-            <td>${resultado.concurso}</td>
-            <td>${resultado.data}</td>
-            <td><div class="numeros-tabela">${numerosSorteados}</div></td>
-            <td>${resultado.mes_sorteado}</td>
-            <td><div class="numeros-tabela">${seusNumeros}</div></td>
-            <td>${resultado.seu_mes || '-'}</td>
-            <td>${resultado.acertos}${resultado.acertou_mes ? ' + Mês' : ''}</td>
-            <td>${premioText}</td>
-            <td>${resultado.premio > 0 ? 'Premiado' : 'Acumulado'}</td>
-        `;
-        tabelaBody.appendChild(row);
-    });
-
-    // Atualiza o total no rodapé
-    const totalCell = document.querySelector('.total-premios');
-    if (totalCell && data.resumo.total_premios) {
-        totalCell.textContent = `R$ ${data.resumo.total_premios.toLocaleString('pt-BR', {minimumFractionDigits: 2})}`;
-    }
-}
-// Inicialização do documento
-document.addEventListener('DOMContentLoaded', async function() {
-    setupDragAndDrop();
-    const numeros = document.querySelectorAll('.numero');
-    const limparBtn = document.getElementById('limpar');
-    const sugestaoBtn = document.getElementById('sugestao');
-    const conferirBtn = document.getElementById('conferir');
-    const incluirBtn = document.getElementById('incluir');
-    const listaJogos = document.getElementById('lista-jogos');
-    const overlay = document.getElementById('overlay');
-
-    
-    // Ocultar botões de exportação inicialmente
-    toggleBotoesExportacao(false);
-
-    // Configuração do botão de cancelar conferência
-    const btnCancelarConferencia = document.getElementById('btn-cancelar-conferencia');
-    if (btnCancelarConferencia) {
-        btnCancelarConferencia.addEventListener('click', () => {
-            conferenciaCancelada = true;
-            overlay.style.display = 'none';
-        });
-    }
-
-    // Configuração dos botões de ação
-    document.getElementById('btn-limpar-todos').addEventListener('click', limparTodosJogos);
-    document.getElementById('btn-remover-selecionados').addEventListener('click', removerJogosSelecionados);
-
-    // Inicialização
-    atualizarContadorJogos();
-
-    // Botão Limpar
-    limparBtn.addEventListener('click', () => {
-        numeros.forEach(numero => numero.classList.remove('selecionado'));
-        numerosSelecionados.clear();
-        document.querySelectorAll('.mes').forEach(mes => mes.classList.remove('selecionado'));
-        mesSelecionado = null;
-    });
-
-    // Botão Sugestão
-    sugestaoBtn.addEventListener('click', async () => {
-        const response = await fetch('/gerar_numeros');
-        const data = await response.json();
-
-        limparBtn.click();
-        data.numeros.forEach(num => {
-            const numero = document.querySelector(`[data-numero="${num}"]`);
-            numero.classList.add('selecionado');
-            numerosSelecionados.add(num);
-        });
-        
-        const mesElement = document.querySelector(`[data-mes="${data.mes}"]`);
-        if (mesElement) {
-            mesElement.classList.add('selecionado');
-            mesSelecionado = data.mes;
-        }
-    });
-
-   // Botão Incluir
-    incluirBtn.addEventListener('click', () => {
-        // Debug para verificar os números selecionados
-        console.log('Números selecionados ao incluir:', numerosSelecionados);
-        
-        if (numerosSelecionados.size !== 7) {
-            console.log('Quantidade atual:', numerosSelecionados.size); // Debug
-            alert(`Selecione 7 números antes de incluir o jogo! (Selecionados: ${numerosSelecionados.size})`);
-            return;
-        }
-
-        const numerosArray = Array.from(numerosSelecionados).sort((a, b) => a - b);
-        console.log('Array de números para incluir:', numerosArray); // Debug
-        
-        const novoJogo = {
-            numeros: numerosArray,
-            mes: mesSelecionado
-        };
-
-        console.log('Novo jogo a ser incluído:', novoJogo); // Debug
-
-        jogosIncluidos.push(novoJogo);
-        adicionarJogoNaLista(novoJogo);
-        atualizarContadorJogos();
-        alert('1 jogo foi incluído com sucesso!');
-        
-        // Limpar seleções
-        limparBtn.click();
-        numerosSelecionados.clear(); // Garantir que o Set está limpo
-        mesSelecionado = null;
-    });
-
-    // Botão Conferir
-    conferirBtn.addEventListener('click', async () => {
-        if (jogosIncluidos.length === 0) {
-            alert('Inclua pelo menos um jogo antes de conferir!');
-            return;
-        }
-
-        const inicio = parseInt(document.getElementById('inicio').value);
-        const fim = parseInt(document.getElementById('fim').value);
-
-        if (!inicio || !fim || inicio > fim) {
-            alert('Verifique os números dos concursos!');
-            return;
-        }
-
-        overlay.style.display = 'flex';
-        conferenciaCancelada = false;
-        toggleBotoesExportacao(false);
-
-        try {
-            const response = await fetch('/conferir', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    jogos: jogosIncluidos,
-                    inicio: inicio,
-                    fim: fim
-                })
-            });
-
-            if (!response.ok) throw new Error('Erro ao processar jogos');
-            
-            const resultados = await response.json();
-            
-            // Atualizar contadores
-            document.getElementById('quatro-acertos').textContent = resultados.resumo.quatro;
-            document.getElementById('cinco-acertos').textContent = resultados.resumo.cinco;
-            document.getElementById('seis-acertos').textContent = resultados.resumo.seis;
-            document.getElementById('sete-acertos').textContent = resultados.resumo.sete;
-            document.getElementById('mes-acertos').textContent = resultados.resumo.mes;
-
-            // Atualizar valores dos prêmios
-            const calcularTotalPremios = (acertos) => {
-                return resultados.acertos
-                    .filter(r => r.acertos === acertos)
-                    .reduce((sum, r) => sum + r.premio, 0);
-            };
-
-            document.getElementById('quatro-valor').textContent = formatarValor(calcularTotalPremios(4));
-            document.getElementById('cinco-valor').textContent = formatarValor(calcularTotalPremios(5));
-            document.getElementById('seis-valor').textContent = formatarValor(calcularTotalPremios(6));
-            document.getElementById('sete-valor').textContent = formatarValor(calcularTotalPremios(7));
-            document.getElementById('mes-valor').textContent = formatarValor(
-                resultados.acertos
-                    .filter(r => r.acertou_mes)
-                    .reduce((sum, r) => sum + r.premio, 0)
-            );
-
-            // Atualizar detalhes e tabelas
-            atualizarDetalhesETabela(resultados);
-            if (resultados.jogos_stats) {
-                atualizarTabelaJogosSorteados(resultados.jogos_stats);
-            }
-
-            dadosUltimaConsulta = resultados;
-            toggleBotoesExportacao(true);
-
-        } catch (error) {
-            console.error('Erro:', error);
-            alert('Ocorreu um erro ao processar os jogos. Tente novamente.');
-        } finally {
-            overlay.style.display = 'none';
-        }
-    });
-});
-
-function adicionarLog(mensagem) {
-    const logDiv = document.createElement('div');
-    logDiv.className = 'log-mensagem';
-    logDiv.textContent = mensagem;
-    const progressText = document.querySelector('.progress-text');
-    progressText.appendChild(logDiv);
-    // Mantém apenas as últimas 5 mensagens
-    while (progressText.children.length > 5) {
-        progressText.removeChild(progressText.firstChild);
-    }
-}
-
-/* ADICIONE ESTAS DUAS FUNÇÕES AUXILIARES logo após a função conferir:  */
-
-function atualizarProgressoConferencia(loteAtual, totalLotes, concursoInicio, concursoFim) {
-    const progressFill = document.getElementById('progress-fill');
-    const loteAtualSpan = document.getElementById('lote-atual');
-    const totalLotesSpan = document.getElementById('total-lotes');
-    const concursoAtualSpan = document.getElementById('concurso-atual');
-    const concursoFimSpan = document.getElementById('concurso-fim');
-    
-    const progresso = (loteAtual / totalLotes) * 100;
-    
-    progressFill.style.width = `${progresso}%`;
-    loteAtualSpan.textContent = loteAtual;
-    totalLotesSpan.textContent = totalLotes;
-    concursoAtualSpan.textContent = concursoInicio;
-    concursoFimSpan.textContent = concursoFim;
-}
-/* ADICIONE ESTAS DUAS FUNÇÕES AUXILIARES logo após a função conferir: */
-
-
-
-function formatarValor(valor) {
-    return valor > 0 ? 
-        `R$ ${valor.toLocaleString('pt-BR', {minimumFractionDigits: 2})}` : 
-        'Não houve ganhadores';
-}
-
-function debugNumeros() {
-    console.log('Estado atual dos números selecionados:', {
-        quantidade: numerosSelecionados.size,
-        numeros: Array.from(numerosSelecionados).sort((a, b) => a - b),
-        mes: mesSelecionado
-    });
-}
-// Adicione ao seu arquivo main.js
-function atualizarProgressoConferencia(loteAtual, totalLotes, concursoInicio, concursoFim) {
-    const progressFill = document.getElementById('progress-fill');
-    const loteAtualSpan = document.getElementById('lote-atual');
-    const totalLotesSpan = document.getElementById('total-lotes');
-    const concursoAtualSpan = document.getElementById('concurso-atual');
-    const concursoFimSpan = document.getElementById('concurso-fim');
-    
-    const progresso = (loteAtual / totalLotes) * 100;
-    
-    progressFill.style.width = `${progresso}%`;
-    loteAtualSpan.textContent = loteAtual;
-    totalLotesSpan.textContent = totalLotes;
-    concursoAtualSpan.textContent = concursoInicio;
-    concursoFimSpan.textContent = concursoFim;
-}
-// Adicione ao seu JavaScript
-function adicionarLog(mensagem) {
-    const logDiv = document.createElement('div');
-    logDiv.className = 'log-mensagem';
-    logDiv.textContent = mensagem;
-    document.querySelector('.progress-text').appendChild(logDiv);
-}
-
-#index.html
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dia de Sorte Conferidor</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-<body>
-    <div class="container">
-        <h1>Conferidor Dia de Sorte</h1>
-
-        <h1>Informação importante!</h1>
-        <h2>Para os Jogos:</h2>
-        <ul>
-            <li>Você pode carregar quantos jogos quiser (20 mil, 80 mil, 100 mil...)</li>
-            <li>Não há limite para quantidade de jogos</li>
-            <li>Todos os jogos serão verificados em cada lote</li>
-        </ul>
-        <h2>Para os Concursos:</h2>
-        <ul>
-            <li>O sistema processa em lotes de 930 concursos</li>
-            <li>
-                Por exemplo, se você quiser verificar do concurso 1 até o último:
-                <ul>
-                    <li>Lote 1: concursos 1-930</li>
-                    <li>Lote 2: concursos 931-1860</li>
-                    <li>E assim por diante...</li>
-                </ul>
-            </li>
-        </ul>
-
-        <div class="volante">
-            <h2>Selecione 7 números</h2>
-            <div class="numeros">
-                {% for i in range(1, 32) %}
-                    <button type="button" class="numero" data-numero="{{ i }}">{{ '%02d' % i }}</button>
-                {% endfor %}
-            </div>
-
-            <div class="meses-container">
-                <h2>Selecione o Mês da Sorte</h2>
-                <div class="meses">
-                    {% for mes in meses %}
-                        <button type="button" class="mes" data-mes="{{ mes }}">{{ mes }}</button>
-                    {% endfor %}
-                </div>
-            </div>
-        </div>
-
-        <div class="drop-zone" id="drop-zone">
-            <div class="drop-zone-content">
-                <p>Arraste e solte seu arquivo aqui ou clique para selecionar</p>
-                <p class="drop-zone-hint">Arquivos .txt ou .xlsx</p>
-                <input type="file" id="file-input" accept=".txt,.xlsx" hidden>
-            </div>
-        </div>
-
-        <div class="controles">
-            <div class="input-group">
-                <label for="inicio">Concurso Inicial:</label>
-                <input type="number" id="inicio" min="1">
-            </div>
-            <div class="input-group">
-                <label for="fim">Concurso Final:</label>
-                <input type="number" id="fim" min="1" value="{{ ultimo_concurso }}">
-            </div>
-            <div class="checkbox-group">
-                <input type="checkbox" id="somente-premiados">
-                <label for="somente-premiados">Somente premiados</label>
-            </div>
-        </div>
-
-        <div class="acoes">
-            <button id="incluir" class="btn btn-azul">Incluir Jogo</button>
-            <button id="limpar" class="btn btn-vermelho">Limpar</button>
-            <button id="sugestao" class="btn btn-roxo">Palpite</button>
-            <button id="conferir" class="btn btn-verde">Conferir</button>
-        </div>
-
-        <div class="jogos-incluidos">
-            <h3>Jogos Incluídos (<span id="contador-jogos">0</span> jogos)</h3>
-            <div id="lista-jogos" class="lista-jogos"></div>
-        </div>
-
-        <div class="acoes-jogos">
-            <button id="btn-remover-selecionados" class="btn-acao" disabled>
-                Remover Selecionados
-            </button>
-            <button id="btn-limpar-todos" class="btn-acao">
-                Limpar Todos
-            </button>
-        </div>
-
-		<!--
-        <div id="overlay" class="overlay" style="display: none;">
-            <div class="progress">
-                <div class="progress-bar"></div>
-                <div class="progress-text">Conferindo jogos...</div>
-                <button id="btn-cancelar-conferencia" class="btn-cancelar">
-                    Cancelar Conferência
-                </button>
-            </div>
-        </div>
-		-->
-		<div id="overlay" class="overlay" style="display: none;">
-			<div class="progress">
-				<h3>Processando Jogos</h3>
-				<div class="progress-bar">
-					<div class="progress-bar-fill" id="progress-fill"></div>
-				</div>
-				<div class="progress-text">Conferindo jogos...</div>
-				<div class="lote-info">
-					Lote atual: <span id="lote-atual">0</span> de <span id="total-lotes">0</span>
-					<br>
-					Concursos: <span id="concurso-atual">0</span> - <span id="concurso-fim">0</span>
-				</div>
-				<button id="btn-cancelar-conferencia" class="btn btn-danger">
-					Cancelar Conferência
-				</button>
-			</div>
-		</div>
-
-        <div class="resultados">
-            <h2>Resumo de acertos</h2>
-            <div class="export-buttons hidden">
-                <button onclick="exportarDados('resumo-acertos', 'xlsx')" class="btn-export">
-                    <i class="fas fa-file-excel"></i> Excel
-                </button>
-                <button onclick="exportarDados('resumo-acertos', 'html')" class="btn-export">
-                    <i class="fas fa-file-code"></i> HTML
-                </button>
-            </div>
-
-            <div class="cards">
-                <div class="card">
-                    <h3>4 Acertos</h3>
-                    <p class="contagem" id="quatro-acertos">0</p>
-                    <p class="valor-premio" id="quatro-valor">R$ 0,00</p>
-                </div>
-                <div class="card">
-                    <h3>5 Acertos</h3>
-                    <p class="contagem" id="cinco-acertos">0</p>
-                    <p class="valor-premio" id="cinco-valor">R$ 0,00</p>
-                </div>
-                <div class="card">
-                    <h3>6 Acertos</h3>
-                    <p class="contagem" id="seis-acertos">0</p>
-                    <p class="valor-premio" id="seis-valor">R$ 0,00</p>
-                </div>
-                <div class="card">
-                    <h3>7 Acertos</h3>
-                    <p class="contagem" id="sete-acertos">0</p>
-                    <p class="valor-premio" id="sete-valor">R$ 0,00</p>
-                </div>
-            </div>
-
-            <div class="card mes-card">
-                <h3>Mês da Sorte</h3>
-                <p class="contagem" id="mes-acertos">0</p>
-                <p class="valor-premio" id="mes-valor">R$ 0,00</p>
-            </div>
-
-            <div id="detalhes-resultados" class="detalhes-resultados"></div>
-
-            <div class="tabela-resumo">
-                <h2>Resumo dos Jogos Premiados</h2>
-                <!-- Continuarei o código no próximo trecho... -->
-				<div class="export-buttons hidden">
-                    <button onclick="exportarDados('jogos-premiados', 'xlsx')" class="btn-export">
-                        <i class="fas fa-file-excel"></i> Excel
-                    </button>
-                    <button onclick="exportarDados('jogos-premiados', 'html')" class="btn-export">
-                        <i class="fas fa-file-code"></i> HTML
-                    </button>
-                </div>
-                <div class="tabela-container">
-                    <table class="tabela-premios">
-                        <thead>
-                            <tr>
-                                <th>Concurso</th>
-                                <th>Data</th>
-                                <th>Números Sorteados</th>
-                                <th>Mês Sorteado</th>
-                                <th>Seu Jogo</th>
-                                <th>Seu Mês</th>
-                                <th>Acertos</th>
-                                <th>Prêmio</th>
-                                <th>Status</th>
-                            </tr>
-                        </thead>
-                        <tbody id="tabela-resultados">
-                            <!-- Será preenchido via JavaScript -->
-                        </tbody>
-                        <tfoot id="tabela-totais">
-                            <tr>
-                                <td colspan="7"><strong>Total de Prêmios</strong></td>
-                                <td colspan="2" class="total-premios"></td>
-                            </tr>
-                        </tfoot>
-                    </table>
-                </div>
-            </div>
-
-            <div class="jogos-mais-sorteados">
-                <h2>Jogos Mais Sorteados</h2>
-                <div class="export-buttons hidden">
-                    <button onclick="exportarDados('jogos-sorteados', 'xlsx')" class="btn-export">
-                        <i class="fas fa-file-excel"></i> Excel
-                    </button>
-                    <button onclick="exportarDados('jogos-sorteados', 'html')" class="btn-export">
-                        <i class="fas fa-file-code"></i> HTML
-                    </button>
-                </div>
-                
-                <div class="tabela-container">
-                    <table class="tabela-premios" id="tabela-jogos-sorteados">
-                        <thead>
-                            <tr>
-                                <th>Meu Jogo</th>
-                                <th>Total de Acertos</th>
-                                <th>Distribuição</th>
-                                <th>Acertos do Mês</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    </div>
-    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
-</body>
-</html>
-
-#sytle.css/* Base styles and variables */
+/* Base styles and variables */
 :root {
     --primary-color: #008751;
     --secondary-color: #005c36;
@@ -1706,7 +25,7 @@ body {
     font-family: Arial, sans-serif;
     line-height: 1.6;
     color: var(--text-primary);
-    background-color: var(--light-gray);
+    background-color: var(--white);
     padding: clamp(10px, 2vw, 20px);
 }
 
@@ -2089,122 +408,2938 @@ h2 {
         padding: 15px;
     }
 }
-#gitignore
-# Ambientes virtuais
-venv/
-.env/
+.btn-analisar {
+    padding: 4px 8px;
+    margin-right: 5px;
+    background-color: var(--dia-sorte-dourado);
+    color: #333;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background-color 0.2s;
+}
 
-# Arquivos de cache do Python
-__pycache__/
-*.pyc
-*.pyo
+.btn-analisar:hover {
+    background-color: var(--dia-sorte-claro);
+}
 
-# ConfiguraÃ§Ãµes especÃ­ficas de IDEs/editores
-.vscode/
-.idea/
+.jogo-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 10px;
+    margin-bottom: 5px;
+    background-color: var(--dia-sorte-bg);
+    border-radius: 5px;
+    transition: background-color 0.2s;
+}
 
-# Arquivos de log
-*.log
+.jogo-item:hover {
+    background-color: rgba(0, 114, 46, 0.1);
+}
 
-# Arquivos de banco de dados locais
-*.sqlite3
+.jogo-item.selecionado {
+    background-color: rgba(0, 114, 46, 0.2);
+}
 
-# Outras configuraÃ§Ãµes especÃ­ficas do projeto
+    /* Cores Oficiais Dia de Sorte */
+    :root {
+        --dia-sorte-verde: #00722E;
+        --dia-sorte-verde-claro: #008a37;
+        --dia-sorte-dourado: #D9B13B;
+        --dia-sorte-claro: #E6D089;
+        --dia-sorte-escuro: #005423;
+        --dia-sorte-bg: #F5F0E1;
+    }
+    
+    /* Estilo dos cabeçalhos de resultado */
+    .resultado-header {
+        background-color: var(--dia-sorte-verde);
+        color: white !important;
+        padding: 8px 12px;
+        border-radius: 4px 4px 0 0;
+    }
+    
+    .resultado-header h3 {
+        color: white !important;
+        margin: 0;
+        font-size: 16px;
+    }
+    
+    /* Layout dos resultados lado a lado */
+    .detalhes-resultados {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(450px, 1fr));
+        gap: 15px;
+    }
+    
+    .resultado-item {
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        overflow: hidden;
+        background-color: white;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    /* Ajustes nos botões principais */
+    .acoes {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 20px 0;
+        justify-content: center;
+    }
+    
+    .acoes .btn {
+        padding: 10px 20px;
+        font-size: 16px;
+        font-weight: 600;
+        border-radius: 5px;
+        cursor: pointer;
+        transition: all 0.2s;
+        min-width: 120px;
+        text-align: center;
+    }
+    
+    .btn-azul {
+        background-color: var(--dia-sorte-verde);
+        color: white;
+        border: none;
+    }
+    
+    .btn-azul:hover {
+        background-color: var(--dia-sorte-verde-claro);
+    }
+    
+    .btn-roxo {
+        background-color: var(--dia-sorte-dourado);
+        color: #333;
+        border: none;
+    }
+    
+    .btn-roxo:hover {
+        background-color: var(--dia-sorte-claro);
+    }
+    
+    .btn-verde {
+        background-color: var(--dia-sorte-verde);
+        color: white;
+        border: none;
+    }
+    
+    .btn-verde:hover {
+        background-color: var(--dia-sorte-verde-claro);
+    }
+    
+    /* Ajuste dos botões de ação de jogos */
+    .acoes-jogos {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 15px 0;
+    }
+    
+    .acoes-jogos .btn-acao {
+        padding: 8px 15px;
+        background-color: #f0f0f0;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.2s;
+    }
+    
+    .acoes-jogos .btn-acao:hover:not(:disabled) {
+        background-color: #e0e0e0;
+    }
+    
+    /* Modal de processamento */
+    .progress {
+        background-color: white;
+        padding: 20px;
+        border-radius: 8px;
+        width: 90%;
+        max-width: 450px;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    }
+    
+    .progress h3 {
+        color: var(--dia-sorte-verde);
+        margin-top: 0;
+        border-bottom: 2px solid var(--dia-sorte-dourado);
+        padding-bottom: 10px;
+    }
+    
+    .progress-bar {
+        height: 12px;
+        background-color: #f0f0f0;
+        border-radius: 6px;
+        overflow: hidden;
+        margin: 15px 0;
+    }
+    
+    .progress-bar-fill {
+        background-color: var(--dia-sorte-verde);
+        height: 100%;
+        transition: width 0.3s ease;
+    }
+    
+    .btn-danger {
+        background-color: #dc3545 !important;
+        color: white;
+        border: none;
+        padding: 8px 15px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-top: 15px;
+        font-weight: 600;
+        transition: background-color 0.2s;
+    }
+    
+    .btn-danger:hover {
+        background-color: #c82333 !important;
+    }
+    
+    /* Jogos Mais Sorteados - Cabeçalho */
+    .jogos-mais-sorteados h2 {
+        color: var(--dia-sorte-verde);
+        border-bottom: 2px solid var(--dia-sorte-dourado);
+        padding-bottom: 10px;
+        margin-top: 25px;
+    }
+    
+    /* Tabela de jogos mais sorteados */
+    #tabela-jogos-sorteados thead th {
+        background-color: var(--dia-sorte-verde);
+        color: white;
+        padding: 10px;
+        text-align: left;
+    }
+    
+    #tabela-jogos-sorteados tbody tr:nth-child(even) {
+        background-color: #f5f5f5;
+    }
+    
+    /* Melhor visualização dos jogos na lista */
+    .jogo-item {
+        display: flex;
+        align-items: center;
+        padding: 8px 10px;
+        margin-bottom: 5px;
+        background-color: #f8f8f8;
+        border-radius: 4px;
+        border-left: 3px solid var(--dia-sorte-verde);
+    }
+    
+    .jogo-item:hover {
+        background-color: #f0f0f0;
+    }
+    
+    .jogo-item.selecionado {
+        background-color: rgba(0, 114, 46, 0.1);
+        border-left-color: var(--dia-sorte-dourado);
+    }
+    
+    .jogo-numero {
+        display: inline-block;
+        width: 24px;
+        height: 24px;
+        line-height: 24px;
+        text-align: center;
+        border-radius: 50%;
+        background-color: #f0f0f0;
+        margin-right: 3px;
+        font-weight: 600;
+        font-size: 12px;
+    }
+    
+    /* Espaçamento entre números e botões na lista de jogos */
+    .jogo-mes {
+        margin-left: 8px;
+        color: #777;
+    }
+    
+    .btn-remover {
+        margin-left: auto;
+        padding: 4px 8px;
+        background-color: #dc3545;
+        color: white;
+        border: none;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 12px;
+    }
+    
+    .btn-remover:hover {
+        background-color: #c82333;
+    }
+    
+    .btn-analisar {
+        padding: 4px 8px;
+        margin-right: 5px;
+        background-color: var(--dia-sorte-dourado);
+        color: #333;
+        border: none;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 12px;
+    }
+    
+    .btn-analisar:hover {
+        background-color: var(--dia-sorte-claro);
+    }
+    /* Estilos para a análise de dígitos */
+    .jogo-info {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .jogo-digitos {
+        font-size: 12px;
+        color: #666;
+        margin-top: 3px;
+    }
+    
+    .jogo-botoes {
+        display: flex;
+        gap: 5px;
+    }
+    
+    .digitos-celula {
+        font-size: 12px;
+        white-space: nowrap;
+        background-color: #f8f8f8;
+    }
+    
+    .digitos-info {
+        margin-top: 5px;
+        font-size: 13px;
+        color: #666;
+    }
+    
+    .digitos-info strong {
+        color: var(--dia-sorte-verde);
+    }
+    
+    /* Melhorias na visualização dos jogos */
+    .jogo-item {
+        display: flex;
+        align-items: center;
+        padding: 8px 10px;
+        margin-bottom: 8px;
+        background-color: #f8f8f8;
+        border-radius: 4px;
+        border-left: 3px solid var(--dia-sorte-verde);
+    }
+    
+    .jogo-checkbox {
+        margin-right: 10px;
+    }
+    
+    .jogo-numeros {
+        display: flex;
+        align-items: center;
+    }
+/* Formatação dos botões de exportação */
+.export-buttons {
+    display: flex;
+    gap: 10px;
+    margin: 15px 0;
+}
+
+.export-buttons .btn-export {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background-color: var(--dia-sorte-verde);
+    color: white !important;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.export-buttons .btn-export:hover {
+    background-color: var(--dia-sorte-verde-claro);
+}
+
+.export-buttons .btn-export i {
+    font-size: 16px;
+}
+
+/* Cabeçalhos de tabela */
+.tabela-premios th {
+    background-color: var(--dia-sorte-verde);
+    color: white !important;
+    padding: 10px;
+    text-align: left;
+    font-weight: 600;
+}
+
+/* Ajustes de cores nos cabeçalhos */
+.jogos-mais-sorteados h2,
+.tabela-resumo h2 {
+    color: var(--dia-sorte-verde);
+    border-bottom: 2px solid var(--dia-sorte-dourado);
+    padding-bottom: 10px;
+    margin-top: 25px;
+}
+    /* Estilo para os botões de exportação */
+    .export-buttons {
+        display: flex;
+        gap: 10px;
+        margin: 15px 0;
+    }
+    
+    .export-buttons .btn-export {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        background-color: var(--dia-sorte-verde);
+        color: white !important;
+        border: none;
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+    
+    .export-buttons .btn-export:hover {
+        background-color: var(--dia-sorte-verde-claro);
+    }
+    
+    .export-buttons .btn-export i {
+        font-size: 16px;
+    }
+    
+    /* Estilo para destaque do mês */
+    .acerto-mes {
+        color: var(--dia-sorte-dourado);
+        font-weight: bold;
+        margin-left: 5px;
+    }
+    
+    /* Ajuste nas tabelas para garantir que o texto seja legível */
+    .tabela-premios th {
+        background-color: var(--dia-sorte-verde);
+        color: white !important;
+        padding: 10px;
+        text-align: left;
+        font-weight: 600;
+    }
+	/* Estilos para a barra de progresso */
+	.progress-bar {
+		height: 20px;
+		background-color: #f0f0f0;
+		border-radius: 10px;
+		overflow: hidden;
+		margin: 15px 0;
+		border: 1px solid #ddd;
+		position: relative;
+	}
+
+	.progress-bar-fill {
+		height: 100%;
+		background-color: var(--dia-sorte-verde);
+		width: 0%;
+		transition: width 0.5s ease;
+		position: relative;
+		overflow: hidden;
+	}
+
+	/* Efeito de animação na barra de progresso */
+	.progress-bar-fill.animando::after {
+		content: '';
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background: linear-gradient(
+			90deg, 
+			rgba(255,255,255,0) 0%, 
+			rgba(255,255,255,0.3) 50%, 
+			rgba(255,255,255,0) 100%
+		);
+		animation: progress-shine 1.5s linear infinite;
+	}
+
+	@keyframes progress-shine {
+		0% { transform: translateX(-100%); }
+		100% { transform: translateX(100%); }
+	}
+
+	/* Estilo para os logs de progresso */
+	.progress-logs {
+		max-height: 120px;
+		overflow-y: auto;
+		margin: 15px 0;
+		padding: 10px;
+		background-color: #f8f8f8;
+		border-radius: 5px;
+		font-size: 13px;
+		border: 1px solid #eee;
+	}
+
+	.log-item {
+		margin-bottom: 5px;
+		padding-bottom: 5px;
+		border-bottom: 1px solid #eee;
+	}
+
+	.log-item:last-child {
+		margin-bottom: 0;
+		padding-bottom: 0;
+		border-bottom: none;
+	}
+
+	.log-time {
+		color: #666;
+		font-weight: bold;
+		margin-right: 5px;
+	}
+
+	/* Estilo para texto informativo */
+	.progress-text {
+		font-weight: bold;
+		color: var(--dia-sorte-verde);
+		margin: 10px 0;
+		text-align: center;
+	}
+
+	.lote-info {
+		background-color: #f0f8f0;
+		padding: 10px;
+		border-radius: 5px;
+		margin: 10px 0;
+		border-left: 3px solid var(--dia-sorte-verde);
+		font-size: 14px;
+	}
+	/* Cores para feedback de status */
+.progress-bar-fill.error {
+    background-color: #dc3545 !important;
+}
+
+.progress-bar-fill.success {
+    background-color: var(--dia-sorte-verde) !important;
+}
+
+.progress-bar-fill.warning {
+    background-color: #ffc107 !important;
+}
+
+/* Animação para a barra de progresso */
+.progress-bar-fill {
+    height: 100%;
+    background-color: var(--dia-sorte-verde);
+    width: 0%;
+    transition: width 0.5s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.progress-bar-fill::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(
+        90deg, 
+        rgba(255,255,255,0) 0%, 
+        rgba(255,255,255,0.3) 50%, 
+        rgba(255,255,255,0) 100%
+    );
+    animation: progress-shine 1.5s linear infinite;
+}
+
+@keyframes progress-shine {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+	/* Estilo dos logs de progresso */
+	.progress-logs {
+		max-height: 150px;
+		overflow-y: auto;
+		background-color: #f8f8f8;
+		border: 1px solid #eee;
+		border-radius: 4px;
+		padding: 10px;
+		margin-top: 15px;
+		font-size: 13px;
+	}
+
+	.lote-info-card {
+		padding: 8px;
+		border-left: 3px solid var(--dia-sorte-verde);
+		background-color: #f0fff0;
+		margin-bottom: 8px;
+		border-radius: 0 4px 4px 0;
+	}
+
+	.lote-header {
+		font-weight: bold;
+		color: var(--dia-sorte-verde);
+		margin-bottom: 4px;
+	}
+
+	.log-time {
+		font-family: monospace;
+		color: #6c757d;
+		margin-right: 5px;
+	}
+
+	/* Melhorias gerais de estilo */
+	.progress {
+		width: 90%;
+		max-width: 500px;
+		background-color: white;
+		border-radius: 8px;
+		box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+		padding: 20px;
+	}
+
+	.progress h3 {
+		text-align: center;
+		color: var(--dia-sorte-verde);
+		margin-top: 0;
+		margin-bottom: 15px;
+		padding-bottom: 10px;
+		border-bottom: 1px solid #eee;
+	}
+
+	.btn-danger {
+		display: block;
+		margin: 15px auto 0;
+		background-color: #dc3545;
+		color: white;
+		border: none;
+		padding: 10px 20px;
+		border-radius: 4px;
+		font-weight: bold;
+		cursor: pointer;
+		transition: background-color 0.2s;
+	}
+
+	.btn-danger:hover {
+		background-color: #c82333;
+	}
+	
+	// No início do DOMContentLoaded
+document.addEventListener('DOMContentLoaded', async function() {
+    // Ocultar seção de Jogos Mais Sorteados inicialmente
+    const jogosMaisSorteadosSection = document.querySelector('.jogos-mais-sorteados');
+    if (jogosMaisSorteadosSection) {
+        jogosMaisSorteadosSection.style.display = 'none';
+    }
+    
+    // [resto do código existente]
+});
 
 
-#.env
-REDIS_HOST=redis-13833.c336.samerica-east1-1.gce.redns.redis-cloud.com
-REDIS_PORT=13833
-REDIS_PASSWORD=B058xThhTvAbptQa0s25EAGk7A5u473O
-REDIS_DB=0
-FLASK_ENV=development
-REDIS_URL=redis://localhost:6379/0
 
-#requirements.txt
-aiohappyeyeballs
-aiohttp --only-binary=:all:
-aiosignal
-annotated-types
-anyio
-arrow
-asttokens
-async-lru
-asyncio
-attrs
-Babel
-bleach
-blinker
-build
-certifi
-charset-normalizer
-click
-colorama
-comm
-decorator
-defusedxml
-executing
-fastapi
-fastjsonschema
-flask[async]
-Flask-Login
-Flask-Mail
-flask
-fqdn
-frozenlist
-httpcore
-httpx
-idna
-ipykernel
-ipython
-isoduration
-itsdangerous
-jedi
-jsonpointer
-jsonschema
-jsonschema-specifications
-jupyter-events
-jupyter-lsp
-jupyter_client
-jupyter_core
-jupyter_server
-jupyter_server_terminals
-jupyterlab
-jupyterlab_pygments
-jupyterlab_server
-MarkupSafe
-matplotlib-inline
-mistune
-mpmath
-multidict
-nbclient
-nbconvert
-nbformat
-nest-asyncio
-notebook
-notebook_shim
-numpy
-overrides
-packaging
-pandas
-pandocfilters
-parso
-pip-tools
-platformdirs
-prometheus_client
-prompt_toolkit
-propcache
-psutil
-pure-eval
-pycparser
-pydantic
-pydantic_core
-Pygments
-pyproject_hooks
-python-dotenv
-python-json-logger
-python-multipart
-pytz
-redis
-openpyxl
-dataclasses
-typing
+
+// Variáveis globais
+const jogosIncluidos = [];
+const jogosSelecionados = new Set();
+const numerosSelecionados = new Set();
+let conferenciaCancelada = false;
+let dadosUltimaConsulta = null;
+let mesSelecionado = null;
+
+// Configuração tamanho do lote
+const TAMANHO_LOTE = 930;
+
+// Função para extrair dígitos únicos de um conjunto de números
+function extrairDigitosUnicos(numeros) {
+    const digitosSet = new Set();
+    
+    numeros.forEach(num => {
+        const numStr = String(num).padStart(2, '0');
+        for (let i = 0; i < numStr.length; i++) {
+            digitosSet.add(numStr[i]);
+        }
+    });
+    
+    return {
+        digitos: Array.from(digitosSet).sort(),
+        quantidade: digitosSet.size
+    };
+}
+
+// Função para formatar a exibição dos dígitos
+function formatarDigitosUsados(numeros) {
+    const resultado = extrairDigitosUnicos(numeros);
+    return `${resultado.quantidade} (${resultado.digitos.join(', ')})`;
+}
+
+
+// Função para atualizar o contador e mensagem
+function atualizarContadorJogos() {
+    const quantidade = jogosIncluidos.length;
+    const contadorElement = document.getElementById('contador-jogos');
+    if (contadorElement) {
+        contadorElement.textContent = quantidade;
+    }
+
+    const tituloJogos = document.querySelector('.jogos-incluidos h3');
+    if (tituloJogos) {
+        tituloJogos.textContent = `Jogos Incluídos (${quantidade} ${quantidade === 1 ? 'jogo' : 'jogos'})`;
+    }
+}
+
+// Função para formatar mensagens de jogos
+function formatarMensagemJogos(quantidade, acao) {
+    if (acao === 'incluir') {
+        return `${quantidade} jogo${quantidade === 1 ? ' foi incluído' : 's foram incluídos'} com sucesso!`;
+    } else if (acao === 'remover') {
+        return `${quantidade} jogo${quantidade === 1 ? ' foi removido' : 's foram removidos'} com sucesso!`;
+    }
+    return '';
+}
+
+// Funções do Modal
+function setupModal() {
+    const modal = document.getElementById('info-modal');
+    const openModalBtn = document.getElementById('open-info-modal');
+    const closeModalBtn = document.querySelector('.close-modal');
+    const modalCloseBtn = document.getElementById('modal-close-btn');
+    
+    // Abrir modal
+    openModalBtn.addEventListener('click', () => {
+        modal.style.display = 'block';
+    });
+    
+    // Fechar modal com o X
+    if (closeModalBtn) {
+        closeModalBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+    }
+    
+    // Fechar modal com o botão Entendi
+    if (modalCloseBtn) {
+        modalCloseBtn.addEventListener('click', () => {
+            modal.style.display = 'none';
+        });
+    }
+    
+    // Fechar modal clicando fora
+    window.addEventListener('click', (event) => {
+        if (event.target === modal) {
+            modal.style.display = 'none';
+        }
+    });
+    
+    // Mostrar o modal automaticamente na primeira visita
+    const primeiraVisita = !localStorage.getItem('visitouDiaDeSorte');
+    if (primeiraVisita) {
+        modal.style.display = 'block';
+        localStorage.setItem('visitouDiaDeSorte', 'true');
+    }
+}
+
+// Análise de dígitos
+// Função para analisar dígitos
+function analisarDigitos() {
+    const digitosAnalise = document.getElementById('digitos-analise');
+    
+    if (numerosSelecionados.size > 0) {
+        digitosAnalise.style.display = 'block';
+        
+        // Resetar todos os dígitos
+        for (let i = 0; i < 10; i++) {
+            const digitoEl = document.getElementById(`digito-${i}`);
+            digitoEl.classList.remove('digito-presente');
+        }
+        
+        // Análise de dígitos usados
+        const analiseDigitos = extrairDigitosUnicos(Array.from(numerosSelecionados));
+        
+        // Atualizar contagem de dígitos no painel
+        const contadorDigitos = document.getElementById('contador-digitos');
+        if (contadorDigitos) {
+            contadorDigitos.textContent = analiseDigitos.quantidade;
+        }
+        
+        // Marcar dígitos presentes
+        analiseDigitos.digitos.forEach(digito => {
+            const digitoEl = document.getElementById(`digito-${digito}`);
+            if (digitoEl) {
+                digitoEl.classList.add('digito-presente');
+            }
+        });
+    } else {
+        digitosAnalise.style.display = 'none';
+    }
+}
+
+
+// Funções de Drag and Drop
+function setupDragAndDrop() {
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    dropZone.onclick = () => fileInput.click();
+    
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, preventDefaults);
+    });
+    
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+            dropZone.classList.add('dragover');
+        });
+    });
+    
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+            dropZone.classList.remove('dragover');
+        });
+    });
+    
+    dropZone.addEventListener('drop', handleDrop);
+    fileInput.addEventListener('change', handleFileSelect);
+
+    // Configuração dos números
+    const numeros = document.querySelectorAll('.numero');
+    numeros.forEach(numero => {
+        numero.addEventListener('click', () => {
+            const num = parseInt(numero.dataset.numero);
+            if (numero.classList.contains('selecionado')) {
+                numero.classList.remove('selecionado');
+                numerosSelecionados.delete(num);
+            } else if (numerosSelecionados.size < 7) {
+                numero.classList.add('selecionado');
+                numerosSelecionados.add(num);
+            } else {
+                alert('Você já selecionou 7 números!');
+            }
+            
+            // Analisar dígitos após cada seleção/remoção
+            analisarDigitos();
+        });
+    });
+
+    // Configuração dos meses
+    const meses = document.querySelectorAll('.mes');
+    meses.forEach(mes => {
+        mes.addEventListener('click', () => {
+            const mesValor = mes.dataset.mes;
+            meses.forEach(m => m.classList.remove('selecionado'));
+            if (mesValor === mesSelecionado) {
+                mesSelecionado = null;
+            } else {
+                mes.classList.add('selecionado');
+                mesSelecionado = mesValor;
+            }
+        });
+    });
+}
+
+function preventDefaults(e) {
+    e.preventDefault();
+    e.stopPropagation();
+}
+
+async function handleDrop(e) {
+    const file = e.dataTransfer.files[0];
+    await processFile(file);
+}
+
+async function handleFileSelect(e) {
+    const file = e.target.files[0];
+    await processFile(file);
+}
+
+async function processFile(file) {
+    if (!file) return;
+
+    const dropZone = document.getElementById('drop-zone');
+    dropZone.classList.add('processing');
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch('/processar_arquivo', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            const errorData = await response.text();
+            throw new Error(errorData);
+        }
+
+        const data = await response.json();
+        
+        if (data.jogos && data.jogos.length > 0) {
+            const jogosAtuais = new Set(jogosIncluidos.map(j => JSON.stringify(j)));
+            let jogosNovos = 0;
+
+            data.jogos.forEach(jogo => {
+                const jogoStr = JSON.stringify(jogo);
+                if (!jogosAtuais.has(jogoStr)) {
+                    jogosIncluidos.push(jogo);
+                    adicionarJogoNaLista(jogo);
+                    jogosAtuais.add(jogoStr);
+                    jogosNovos++;
+                }
+            });
+
+            // Analisar dígitos do primeiro jogo carregado
+            if (data.jogos.length > 0 && data.jogos[0].numeros) {
+                analisarDigitosJogoCarregado(data.jogos[0].numeros);
+            }
+
+            atualizarContadorJogos();
+            alert(formatarMensagemJogos(jogosNovos, 'incluir'));
+        } else {
+            throw new Error('Nenhum jogo válido encontrado');
+        }
+    } catch (error) {
+        console.error('Erro detalhado:', error);
+        alert(`Erro ao processar arquivo: ${error.message}`);
+    } finally {
+        dropZone.classList.remove('processing');
+    }
+}
+
+// Função para analisar dígitos de jogos carregados
+// Função para analisar dígitos de jogos carregados
+function analisarDigitosJogoCarregado(numeros) {
+    const digitosAnalise = document.getElementById('digitos-analise');
+    digitosAnalise.style.display = 'block';
+    
+    // Resetar todos os dígitos
+    for (let i = 0; i < 10; i++) {
+        const digitoEl = document.getElementById(`digito-${i}`);
+        digitoEl.classList.remove('digito-presente');
+    }
+    
+    // Análise de dígitos usados
+    const analiseDigitos = extrairDigitosUnicos(numeros);
+    
+    // Atualizar contagem de dígitos no painel
+    const contadorDigitos = document.getElementById('contador-digitos');
+    if (contadorDigitos) {
+        contadorDigitos.textContent = analiseDigitos.quantidade;
+    }
+    
+    // Marcar dígitos presentes
+    analiseDigitos.digitos.forEach(digito => {
+        const digitoEl = document.getElementById(`digito-${digito}`);
+        if (digitoEl) {
+            digitoEl.classList.add('digito-presente');
+        }
+    });
+}
+
+// Funções de manipulação de jogos
+function adicionarJogoNaLista(jogo) {
+    const jogoItem = document.createElement('div');
+    jogoItem.className = 'jogo-item';
+
+    // Análise de dígitos para este jogo
+    const analiseDigitos = extrairDigitosUnicos(jogo.numeros);
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'jogo-checkbox';
+    checkbox.onclick = (e) => {
+        const jogoStr = JSON.stringify(jogo);
+        if (e.target.checked) {
+            jogosSelecionados.add(jogoStr);
+            jogoItem.classList.add('selecionado');
+        } else {
+            jogosSelecionados.delete(jogoStr);
+            jogoItem.classList.remove('selecionado');
+        }
+        atualizarBotoesSeleção();
+    };
+
+    const jogoInfo = document.createElement('div');
+    jogoInfo.className = 'jogo-info';
+    
+    const jogoNumeros = document.createElement('div');
+    jogoNumeros.className = 'jogo-numeros';
+    
+    // Números do jogo
+    jogo.numeros.forEach(num => {
+        const numeroSpan = document.createElement('span');
+        numeroSpan.className = 'jogo-numero';
+        numeroSpan.textContent = String(num).padStart(2, '0');
+        jogoNumeros.appendChild(numeroSpan);
+    });
+
+    // Mês, se houver
+    if (jogo.mes) {
+        const mesSpan = document.createElement('span');
+        mesSpan.className = 'jogo-mes';
+        mesSpan.textContent = `| ${jogo.mes}`;
+        jogoNumeros.appendChild(mesSpan);
+    }
+    
+    // Adicionar informação de dígitos
+    const digitosInfo = document.createElement('div');
+    digitosInfo.className = 'jogo-digitos';
+    digitosInfo.innerHTML = `<span>Dígitos: <strong>${analiseDigitos.quantidade}</strong> (${analiseDigitos.digitos.join(', ')})</span>`;
+    
+    jogoInfo.appendChild(jogoNumeros);
+    jogoInfo.appendChild(digitosInfo);
+
+    const btnRemover = document.createElement('button');
+    btnRemover.className = 'btn-remover';
+    btnRemover.textContent = 'Remover';
+    btnRemover.onclick = () => removerJogo(jogo, jogoItem);
+
+    // Botão para analisar dígitos do jogo
+    const btnAnalisar = document.createElement('button');
+    btnAnalisar.className = 'btn-analisar';
+    btnAnalisar.innerHTML = '<i class="fas fa-search"></i>';
+    btnAnalisar.title = 'Analisar dígitos deste jogo';
+    btnAnalisar.onclick = (e) => {
+        e.stopPropagation();
+        analisarDigitosJogoCarregado(jogo.numeros);
+    };
+
+    const botoesContainer = document.createElement('div');
+    botoesContainer.className = 'jogo-botoes';
+    botoesContainer.appendChild(btnAnalisar);
+    botoesContainer.appendChild(btnRemover);
+
+    jogoItem.appendChild(checkbox);
+    jogoItem.appendChild(jogoInfo);
+    jogoItem.appendChild(botoesContainer);
+    document.getElementById('lista-jogos').appendChild(jogoItem);
+}
+
+function removerJogo(jogo, jogoItem) {
+    const index = jogosIncluidos.findIndex(j =>
+        JSON.stringify(j) === JSON.stringify(jogo)
+    );
+    if (index !== -1) {
+        jogosIncluidos.splice(index, 1);
+        jogosSelecionados.delete(JSON.stringify(jogo));
+        jogoItem.remove();
+        atualizarBotoesSeleção();
+        atualizarContadorJogos();
+        alert(formatarMensagemJogos(1, 'remover'));
+    }
+}
+
+function limparTodosJogos() {
+    const quantidadeAtual = jogosIncluidos.length;
+    if (quantidadeAtual === 0) {
+        alert('Não há jogos para remover');
+        return;
+    }
+
+    if (confirm('Tem certeza que deseja remover todos os jogos?')) {
+        jogosIncluidos.length = 0;
+        jogosSelecionados.clear();
+        document.getElementById('lista-jogos').innerHTML = '';
+        atualizarBotoesSeleção();
+        atualizarContadorJogos();
+        alert(formatarMensagemJogos(quantidadeAtual, 'remover'));
+    }
+}
+
+function removerJogosSelecionados() {
+    if (jogosSelecionados.size === 0) {
+        alert('Selecione pelo menos um jogo para remover');
+        return;
+    }
+
+    const quantidadeRemover = jogosSelecionados.size;
+    if (confirm(`Deseja remover ${quantidadeRemover} jogo${quantidadeRemover === 1 ? '' : 's'} selecionado${quantidadeRemover === 1 ? '' : 's'}?`)) {
+        jogosSelecionados.forEach(jogoStr => {
+            const jogo = JSON.parse(jogoStr);
+            const index = jogosIncluidos.findIndex(j =>
+                JSON.stringify(j) === jogoStr
+            );
+            if (index !== -1) {
+                jogosIncluidos.splice(index, 1);
+            }
+        });
+
+        document.querySelectorAll('.jogo-checkbox:checked').forEach(checkbox => {
+            checkbox.closest('.jogo-item').remove();
+        });
+
+        jogosSelecionados.clear();
+        atualizarBotoesSeleção();
+        atualizarContadorJogos();
+        alert(formatarMensagemJogos(quantidadeRemover, 'remover'));
+    }
+}
+
+function atualizarBotoesSeleção() {
+    const removerSelecionadosBtn = document.getElementById('btn-remover-selecionados');
+    if (removerSelecionadosBtn) {
+        removerSelecionadosBtn.disabled = jogosSelecionados.size === 0;
+    }
+}
+
+// Funções de exportação
+function toggleBotoesExportacao(mostrar) {
+    document.querySelectorAll('.export-buttons').forEach(div => {
+        if (mostrar) {
+            div.classList.remove('hidden');
+        } else {
+            div.classList.add('hidden');
+        }
+    });
+}
+
+async function exportarDados(tipo, formato) {
+    if (!dadosUltimaConsulta) {
+        alert('Faça uma consulta primeiro antes de exportar os dados.');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/exportar/${tipo}/${formato}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(dadosUltimaConsulta)
+        });
+
+        if (!response.ok) {
+            throw new Error('Erro ao exportar dados');
+        }
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${tipo}.${formato}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+
+    } catch (error) {
+        console.error('Erro:', error);
+        alert('Erro ao exportar os dados. Tente novamente.');
+    }
+}
+
+// Funções de atualização de interface
+function atualizarTabelaJogosSorteados(jogos_stats) {
+    const tbody = document.querySelector('#tabela-jogos-sorteados tbody');
+    tbody.innerHTML = '';
+    
+    const jogosMaisSorteadosSection = document.querySelector('.jogos-mais-sorteados');
+
+    if (!jogos_stats || jogos_stats.length === 0) {
+        jogosMaisSorteadosSection.style.display = 'none';
+        return;
+    }
+    
+    jogosMaisSorteadosSection.style.display = 'block';
+
+    // Ordenar por total de acertos (decrescente)
+    jogos_stats.sort((a, b) => b.total - a.total);
+    
+    // Limitar a mostrar apenas os 10 jogos mais sorteados
+    const jogosMostrar = jogos_stats.slice(0, 10);
+
+    jogosMostrar.forEach(jogo => {
+        const tr = document.createElement('tr');
+        
+        const tdJogo = document.createElement('td');
+        tdJogo.innerHTML = `<div class="numeros-tabela">
+            ${jogo.numeros.map(n => 
+                `<span class="numero-tabela">${String(n).padStart(2, '0')}</span>`
+            ).join('')}
+        </div>`;
+        
+        const tdTotal = document.createElement('td');
+        tdTotal.textContent = `${jogo.total} vezes`;
+        
+        const tdDistribuicao = document.createElement('td');
+        const distribuicao = [];
+        for (let i = 1; i <= 7; i++) {
+            if (jogo.distribuicao[i] > 0) {
+                distribuicao.push(
+                    `<span class="distribuicao-badge">
+                        ${i} ponto${i !== 1 ? 's' : ''}: ${jogo.distribuicao[i]} vez${jogo.distribuicao[i] !== 1 ? 'es' : ''}
+                    </span>`
+                );
+            }
+        }
+        tdDistribuicao.innerHTML = distribuicao.join(' ');
+
+        const tdMes = document.createElement('td');
+        tdMes.textContent = jogo.acertos_mes > 0 ? `${jogo.acertos_mes} vezes` : '-';
+        
+        tr.appendChild(tdJogo);
+        tr.appendChild(tdTotal);
+        tr.appendChild(tdDistribuicao);
+        tr.appendChild(tdMes);
+        tbody.appendChild(tr);
+    });
+}
+
+function atualizarDetalhesETabela(data) {
+    const detalhesDiv = document.getElementById('detalhes-resultados');
+    const tabelaBody = document.getElementById('tabela-resultados');
+    
+    detalhesDiv.innerHTML = '';
+    tabelaBody.innerHTML = '';
+
+    if (!data.acertos || data.acertos.length === 0) {
+        detalhesDiv.innerHTML = '<div class="sem-resultados">Nenhum prêmio encontrado para os jogos selecionados.</div>';
+        
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 10; // Ajustado para o número correto de colunas
+        td.textContent = 'Nenhum prêmio encontrado.';
+        td.style.textAlign = 'center';
+        td.style.padding = '20px';
+        tr.appendChild(td);
+        tabelaBody.appendChild(tr);
+        return;
+    }
+
+    data.acertos.forEach(resultado => {
+        // Análise de dígitos para este jogo
+        const analiseDigitos = extrairDigitosUnicos(resultado.seus_numeros);
+        
+        // Verifica se há informações sobre o mês
+        const mesSorteado = resultado.mes_sorteado || 'Não informado';
+        const seuMes = resultado.seu_mes || 'Não informado';
+        
+        // Adicionar na seção de detalhes
+        const resultadoDiv = document.createElement('div');
+        resultadoDiv.className = 'resultado-item';
+        resultadoDiv.innerHTML = `
+            <div class="resultado-header">
+                <h3>Concurso ${resultado.concurso} - ${resultado.data}</h3>
+            </div>
+            <div class="resultado-numeros">
+                <div class="numeros-sorteados">
+                    <h4>Números Sorteados:</h4>
+                    <div class="numeros-lista">
+                        ${resultado.numeros_sorteados
+                            .sort((a, b) => a - b)
+                            .map(n => `<span class="numero-sorteado">${String(n).padStart(2, '0')}</span>`)
+                            .join(' ')}
+                    </div>
+                    <p>Mês da Sorte: <strong>${mesSorteado}</strong></p>
+                </div>
+                <div class="seu-jogo">
+                    <h4>Seu Jogo:</h4>
+                    <div class="numeros-lista">
+                        ${resultado.seus_numeros
+                            .sort((a, b) => a - b)
+                            .map(n => `<span class="numero-jogado ${resultado.numeros_sorteados.includes(n) ? 'acerto' : ''}">${String(n).padStart(2, '0')}</span>`)
+                            .join(' ')}
+                    </div>
+                    <p>Seu Mês: <strong>${seuMes}</strong> ${resultado.acertou_mes ? '<span class="acerto-mes">(Acertou!)</span>' : ''}</p>
+                </div>
+                <div class="resultado-info">
+                    <p class="acertos-info">Acertos: <strong>${resultado.acertos}</strong></p>
+                    <p class="digitos-info">Dígitos usados: <strong>${analiseDigitos.quantidade}</strong> (${analiseDigitos.digitos.join(', ')})</p>
+                    ${resultado.premio > 0 ? 
+                        `<p class="premio-info">Prêmio: <strong>R$ ${resultado.premio.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong></p>` 
+                        : ''}
+                </div>
+            </div>
+        `;
+        detalhesDiv.appendChild(resultadoDiv);
+
+        // Adicionar na tabela
+        const row = document.createElement('tr');
+        const numerosSorteados = resultado.numeros_sorteados
+            .sort((a, b) => a - b)
+            .map(n => `<span class="numero-tabela">${String(n).padStart(2, '0')}</span>`)
+            .join('');
+        const seusNumeros = resultado.seus_numeros
+            .sort((a, b) => a - b)
+            .map(n => `<span class="numero-tabela ${resultado.numeros_sorteados.includes(n) ? 'acerto' : ''}">${String(n).padStart(2, '0')}</span>`)
+            .join('');
+        const premioText = resultado.premio > 0 
+            ? `R$ ${resultado.premio.toLocaleString('pt-BR', {minimumFractionDigits: 2})}` 
+            : 'Não houve ganhadores';
+
+        row.innerHTML = `
+            <td>${resultado.concurso}</td>
+            <td>${resultado.data}</td>
+            <td><div class="numeros-tabela">${numerosSorteados}</div></td>
+            <td>${mesSorteado}</td>
+            <td><div class="numeros-tabela">${seusNumeros}</div></td>
+            <td>${seuMes}</td>
+            <td>${resultado.acertos}${resultado.acertou_mes ? ' + Mês' : ''}</td>
+            <td class="digitos-celula">${analiseDigitos.quantidade} (${analiseDigitos.digitos.join(', ')})</td>
+            <td>${premioText}</td>
+            <td>${resultado.premio > 0 ? 'Premiado' : 'Acumulado'}</td>
+        `;
+        tabelaBody.appendChild(row);
+    });
+
+    // Atualiza o total no rodapé
+    const totalCell = document.querySelector('.total-premios');
+    if (totalCell && data.resumo.total_premios) {
+        totalCell.textContent = `R$ ${data.resumo.total_premios.toLocaleString('pt-BR', {minimumFractionDigits: 2})}`;
+    }
+}
+
+
+
+
+// Inicialização do documento
+document.addEventListener('DOMContentLoaded', async function() {
+    setupModal();
+    setupDragAndDrop();
+    const numeros = document.querySelectorAll('.numero');
+    const limparBtn = document.getElementById('limpar');
+    const sugestaoBtn = document.getElementById('sugestao');
+    const conferirBtn = document.getElementById('conferir');
+    const incluirBtn = document.getElementById('incluir');
+    const listaJogos = document.getElementById('lista-jogos');
+    const overlay = document.getElementById('overlay');
+    
+    // Ocultar botões de exportação inicialmente
+    toggleBotoesExportacao(false);
+
+    // Configuração do botão de cancelar conferência
+    const btnCancelarConferencia = document.getElementById('btn-cancelar-conferencia');
+    if (btnCancelarConferencia) {
+        btnCancelarConferencia.addEventListener('click', () => {
+            conferenciaCancelada = true;
+            overlay.style.display = 'none';
+        });
+    }
+
+    // Configuração dos botões de ação
+    document.getElementById('btn-limpar-todos').addEventListener('click', limparTodosJogos);
+    document.getElementById('btn-remover-selecionados').addEventListener('click', removerJogosSelecionados);
+
+    // Inicialização
+    atualizarContadorJogos();
+
+    // Botão Limpar
+    limparBtn.addEventListener('click', () => {
+        numeros.forEach(numero => numero.classList.remove('selecionado'));
+        numerosSelecionados.clear();
+        document.querySelectorAll('.mes').forEach(mes => mes.classList.remove('selecionado'));
+        mesSelecionado = null;
+        
+        // Ocultar análise de dígitos
+        document.getElementById('digitos-analise').style.display = 'none';
+    });
+
+    // Botão Sugestão
+    sugestaoBtn.addEventListener('click', async () => {
+        const response = await fetch('/gerar_numeros');
+        const data = await response.json();
+
+        limparBtn.click();
+        data.numeros.forEach(num => {
+            const numero = document.querySelector(`[data-numero="${num}"]`);
+            numero.classList.add('selecionado');
+            numerosSelecionados.add(num);
+        });
+        
+        const mesElement = document.querySelector(`[data-mes="${data.mes}"]`);
+        if (mesElement) {
+            mesElement.classList.add('selecionado');
+            mesSelecionado = data.mes;
+        }
+        
+        // Analisar dígitos do palpite gerado
+        analisarDigitos();
+    });
+
+    // Botão Incluir
+    incluirBtn.addEventListener('click', () => {
+        // Debug para verificar os números selecionados
+        console.log('Números selecionados ao incluir:', numerosSelecionados);
+        
+        if (numerosSelecionados.size !== 7) {
+            console.log('Quantidade atual:', numerosSelecionados.size); // Debug
+            alert(`Selecione 7 números antes de incluir o jogo! (Selecionados: ${numerosSelecionados.size})`);
+            return;
+        }
+
+        const numerosArray = Array.from(numerosSelecionados).sort((a, b) => a - b);
+        console.log('Array de números para incluir:', numerosArray); // Debug
+        
+        const novoJogo = {
+            numeros: numerosArray,
+            mes: mesSelecionado
+        };
+
+        console.log('Novo jogo a ser incluído:', novoJogo); // Debug
+
+        jogosIncluidos.push(novoJogo);
+        adicionarJogoNaLista(novoJogo);
+        atualizarContadorJogos();
+        alert('1 jogo foi incluído com sucesso!');
+        
+        // Limpar seleções
+        limparBtn.click();
+        numerosSelecionados.clear(); // Garantir que o Set está limpo
+        mesSelecionado = null;
+        
+        // Ocultar análise de dígitos
+        document.getElementById('digitos-analise').style.display = 'none';
+    });
+
+
+// Botão Conferir
+	conferirBtn.addEventListener('click', async () => {
+		if (jogosIncluidos.length === 0) {
+			alert('Inclua pelo menos um jogo antes de conferir!');
+			return;
+		}
+
+		const inicio = parseInt(document.getElementById('inicio').value);
+		const fim = parseInt(document.getElementById('fim').value);
+
+		if (!inicio || !fim || inicio > fim) {
+			alert('Verifique os números dos concursos!');
+			return;
+		}
+
+		overlay.style.display = 'flex';
+		conferenciaCancelada = false;
+		toggleBotoesExportacao(false);
+		
+		// Resetar barra de progresso
+		const progressFill = document.getElementById('progress-fill');
+		progressFill.style.width = '0%';
+		
+		// Limpar logs anteriores
+		const logsContainer = document.getElementById('progress-logs');
+		if (logsContainer) logsContainer.innerHTML = '';
+		
+		// Adicionar mensagem inicial
+		adicionarLog(`Iniciando conferência de ${jogosIncluidos.length} jogos nos concursos ${inicio} a ${fim}`);
+		
+		// Configurar timeout para evitar que a requisição fique pendente indefinidamente
+		const controlador = new AbortController();
+		const timeoutId = setTimeout(() => controlador.abort(), 180000); // 3 minutos
+		
+		try {
+			const response = await fetch('/conferir', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					jogos: jogosIncluidos,
+					inicio: inicio,
+					fim: fim
+				}),
+				signal: controlador.signal
+			});
+
+			// Limpar o timeout se a resposta chegar
+			clearTimeout(timeoutId);
+			
+			// Verificar se a resposta não é OK
+			if (!response.ok) {
+				const errorData = await response.json();
+				throw new Error(errorData.message || 'Erro ao processar jogos');
+			}
+			
+			const resultados = await response.json();
+			
+			// Verificar se o resultado tem um campo de erro
+			if (resultados.error) {
+				throw new Error(resultados.message || 'Erro ao processar jogos');
+			}
+			
+			// Garantir que a barra chegue a 100%
+			progressFill.style.width = '100%';
+			adicionarLog('Processamento concluído com sucesso!');
+			
+			// Atualizar contadores
+			document.getElementById('quatro-acertos').textContent = resultados.resumo.quatro;
+			document.getElementById('cinco-acertos').textContent = resultados.resumo.cinco;
+			document.getElementById('seis-acertos').textContent = resultados.resumo.seis;
+			document.getElementById('sete-acertos').textContent = resultados.resumo.sete;
+			document.getElementById('mes-acertos').textContent = resultados.resumo.mes;
+
+			// Atualizar valores dos prêmios
+			const calcularTotalPremios = (acertos) => {
+				return resultados.acertos
+					.filter(r => r.acertos === acertos)
+					.reduce((sum, r) => sum + r.premio, 0);
+			};
+
+			document.getElementById('quatro-valor').textContent = formatarValor(calcularTotalPremios(4));
+			document.getElementById('cinco-valor').textContent = formatarValor(calcularTotalPremios(5));
+			document.getElementById('seis-valor').textContent = formatarValor(calcularTotalPremios(6));
+			document.getElementById('sete-valor').textContent = formatarValor(calcularTotalPremios(7));
+			document.getElementById('mes-valor').textContent = formatarValor(
+				resultados.acertos
+					.filter(r => r.acertou_mes)
+					.reduce((sum, r) => sum + r.premio, 0)
+			);
+
+			// Atualizar detalhes e tabelas
+			atualizarDetalhesETabela(resultados);
+			if (resultados.jogos_stats) {
+				atualizarTabelaJogosSorteados(resultados.jogos_stats);
+			}
+
+			dadosUltimaConsulta = resultados;
+			toggleBotoesExportacao(true);
+
+		} catch (error) {
+			console.error('Erro:', error);
+			
+			// Verificar se é um erro de timeout/abort
+			if (error.name === 'AbortError') {
+				adicionarLog('ERRO: A requisição demorou muito tempo e foi cancelada.');
+				alert('A requisição demorou muito tempo. Tente com um intervalo menor de concursos.');
+			} else {
+				adicionarLog(`ERRO: ${error.message || 'Erro desconhecido ao processar os jogos'}`);
+				alert(`Ocorreu um erro: ${error.message || 'Erro ao processar os jogos. Tente novamente.'}`);
+			}
+			
+			// Garantir que a barra mostre o erro
+			progressFill.style.width = '100%';
+			progressFill.style.backgroundColor = '#dc3545';
+			
+		} finally {
+			// Limpar timeout se ainda estiver ativo
+			clearTimeout(timeoutId);
+			
+			// Fechar overlay com pequeno delay
+			setTimeout(() => {
+				if (!conferenciaCancelada) {
+					overlay.style.display = 'none';
+				}
+			}, 1500);
+		}
+	});
+});
+
+function adicionarLog(mensagem) {
+    const logDiv = document.createElement('div');
+    logDiv.className = 'log-mensagem';
+    logDiv.textContent = mensagem;
+    const progressText = document.querySelector('.progress-text');
+    progressText.appendChild(logDiv);
+    // Mantém apenas as últimas 5 mensagens
+    while (progressText.children.length > 5) {
+        progressText.removeChild(progressText.firstChild);
+    }
+}
+
+// Função para atualizar visualmente o progresso dos lotes
+function atualizarProgressoLote(loteAtual, totalLotes, concursoInicio, concursoFim) {
+    const progressFill = document.getElementById('progress-fill');
+    const progressText = document.querySelector('.progress-text');
+    const loteInfo = document.createElement('div');
+    
+    // Calcular porcentagem
+    const porcentagem = Math.floor((loteAtual / totalLotes) * 100);
+    
+    // Atualizar barra
+    progressFill.style.width = `${porcentagem}%`;
+    
+    // Atualizar texto principal
+    progressText.textContent = `Processando lote ${loteAtual} de ${totalLotes} (${porcentagem}% concluído)`;
+    
+    // Adicionar informação detalhada do lote
+    loteInfo.className = 'lote-info-card';
+    loteInfo.innerHTML = `
+        <div class="lote-header">Lote atual: ${loteAtual} de ${totalLotes}</div>
+        <div class="lote-details">Concursos: ${concursoInicio} - ${concursoFim}</div>
+    `;
+    
+    // Adicionar à seção de logs
+    const logsContainer = document.getElementById('progress-logs');
+    if (logsContainer) {
+        logsContainer.insertBefore(loteInfo, logsContainer.firstChild);
+        
+        // Limitar a quantidade de itens
+        while (logsContainer.children.length > 10) {
+            logsContainer.removeChild(logsContainer.lastChild);
+        }
+    }
+}
+
+
+
+// Função melhorada para atualização do progresso
+function atualizarProgressoConferencia(loteAtual, totalLotes, concursoInicio, concursoFim) {
+    const progressFill = document.getElementById('progress-fill');
+    const loteAtualSpan = document.getElementById('lote-atual');
+    const totalLotesSpan = document.getElementById('total-lotes');
+    const concursoAtualSpan = document.getElementById('concurso-atual');
+    const concursoFimSpan = document.getElementById('concurso-fim');
+    const progressText = document.querySelector('.progress-text');
+    
+    // Calcular a porcentagem de progresso
+    const progresso = (loteAtual / totalLotes) * 100;
+    
+    // Atualizar a barra de progresso com animação
+    progressFill.style.width = `${progresso}%`;
+    progressFill.classList.add('animando');
+    
+    // Atualizar os textos informativos
+    loteAtualSpan.textContent = loteAtual;
+    totalLotesSpan.textContent = totalLotes;
+    concursoAtualSpan.textContent = concursoInicio;
+    concursoFimSpan.textContent = concursoFim;
+    
+    // Atualizar mensagem de progresso
+    progressText.textContent = `Processando lote ${loteAtual} de ${totalLotes}...`;
+    
+    // Adicionar log visual
+    adicionarLog(`Processando concursos ${concursoInicio} a ${concursoFim} (${Math.round(progresso)}% concluído)`);
+}
+
+// Função para adicionar logs visuais com timestamp
+function adicionarLog(mensagem) {
+    const logsContainer = document.getElementById('progress-logs');
+    if (!logsContainer) return;
+    
+    const agora = new Date();
+    const timestamp = `${agora.getHours().toString().padStart(2, '0')}:${agora.getMinutes().toString().padStart(2, '0')}:${agora.getSeconds().toString().padStart(2, '0')}`;
+    
+    const logItem = document.createElement('div');
+    logItem.className = 'log-item';
+    logItem.innerHTML = `<span class="log-time">${timestamp}</span> ${mensagem}`;
+    
+    logsContainer.insertBefore(logItem, logsContainer.firstChild);
+    
+    // Limitar a 5 mensagens mais recentes
+    while (logsContainer.children.length > 5) {
+        logsContainer.removeChild(logsContainer.lastChild);
+    }
+    
+    // Atualizar a contagem de progresso na title bar para feedback mesmo quando a aba não está focada
+    document.title = `(${Math.round(parseFloat(document.getElementById('progress-fill').style.width))}%) Dia de Sorte Conferidor`;
+}
+
+function formatarValor(valor) {
+    return valor > 0 ? 
+        `R$ ${valor.toLocaleString('pt-BR', {minimumFractionDigits: 2})}` : 
+        'Não houve ganhadores';
+}
+
+function debugNumeros() {
+    console.log('Estado atual dos números selecionados:', {
+        quantidade: numerosSelecionados.size,
+        numeros: Array.from(numerosSelecionados).sort((a, b) => a - b),
+        mes: mesSelecionado
+    });
+}
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dia de Sorte Conferidor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        :root {
+            /* Cores oficiais do Dia de Sorte */
+            --dia-sorte-verde: #00722E;
+            --dia-sorte-dourado: #D9B13B;
+            --dia-sorte-claro: #E6D089;
+            --dia-sorte-escuro: #005423;
+            --dia-sorte-bg: #F5F0E1;
+        }
+
+        body {
+            background-color: var(--dia-sorte-bg);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        h1 {
+            color: var(--dia-sorte-verde);
+            text-align: center;
+            margin-bottom: 20px;
+            font-weight: 700;
+        }
+        
+        /* Estilos do Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            overflow: auto;
+        }
+        
+        .modal-content {
+            background-color: white;
+            margin: 10% auto;
+            padding: 20px;
+            border-radius: 10px;
+            width: 80%;
+            max-width: 700px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+            animation: modalFadeIn 0.3s;
+        }
+        
+        .modal-header {
+            display: flex;
+            align-items: center;
+            padding-bottom: 15px;
+            border-bottom: 2px solid var(--dia-sorte-dourado);
+            margin-bottom: 15px;
+        }
+        
+        .modal-header i {
+            font-size: 24px;
+            color: var(--dia-sorte-dourado);
+            margin-right: 10px;
+        }
+        
+        .modal-header h2 {
+            color: var(--dia-sorte-verde);
+            margin: 0;
+        }
+        
+        .modal-body {
+            max-height: 60vh;
+            overflow-y: auto;
+            padding: 10px 0;
+        }
+        
+        .modal-footer {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+            text-align: right;
+        }
+        
+        .close-modal {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        
+        .close-modal:hover {
+            color: var(--dia-sorte-verde);
+        }
+        
+        .info-section {
+            margin-bottom: 20px;
+        }
+        
+        .info-section h3 {
+            color: var(--dia-sorte-verde);
+            margin-bottom: 10px;
+            font-size: 18px;
+        }
+        
+        .info-section ul {
+            list-style-type: none;
+            padding-left: 10px;
+        }
+        
+        .info-section ul li {
+            margin-bottom: 10px;
+            display: flex;
+            align-items: flex-start;
+        }
+        
+        .info-section ul li i {
+            color: var(--dia-sorte-dourado);
+            margin-right: 10px;
+            margin-top: 4px;
+        }
+        
+        .info-section ul ul {
+            margin-top: 10px;
+            margin-left: 25px;
+        }
+        
+        .info-section ul ul li {
+            margin-bottom: 5px;
+        }
+        
+        .btn-info {
+            background-color: var(--dia-sorte-verde);
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-weight: 600;
+            transition: background-color 0.2s;
+        }
+        
+        .btn-info:hover {
+            background-color: var(--dia-sorte-escuro);
+        }
+        
+        .btn-dourado {
+            background-color: var(--dia-sorte-dourado);
+            color: #333;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background-color 0.2s;
+        }
+        
+        .btn-dourado:hover {
+            background-color: var(--dia-sorte-claro);
+        }
+        
+        .info-banner {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        
+        @keyframes modalFadeIn {
+            from {opacity: 0; transform: translateY(-20px);}
+            to {opacity: 1; transform: translateY(0);}
+        }
+        
+        /* Adaptações para o tema do Dia de Sorte */
+        .volante {
+            background-color: var(--dia-sorte-bg);
+            border: 1px solid var(--dia-sorte-verde);
+        }
+        
+        .numero.selecionado {
+            background-color: var(--dia-sorte-verde);
+            border-color: var(--dia-sorte-verde);
+        }
+        
+        .mes.selecionado {
+            background-color: var(--dia-sorte-verde);
+            border-color: var(--dia-sorte-verde);
+        }
+        
+        .btn-azul {
+            background-color: var(--dia-sorte-verde);
+        }
+        
+        .btn-azul:hover {
+            background-color: var(--dia-sorte-escuro);
+        }
+        
+        .btn-roxo {
+            background-color: var(--dia-sorte-dourado);
+            color: #333;
+        }
+        
+        .btn-roxo:hover {
+            background-color: var(--dia-sorte-claro);
+        }
+        
+        .btn-verde {
+            background-color: var(--dia-sorte-verde);
+        }
+        
+        .btn-verde:hover {
+            background-color: var(--dia-sorte-escuro);
+        }
+        
+        .progress-bar-fill {
+            background-color: var(--dia-sorte-verde);
+        }
+        
+        /* Tabelas com as cores do Dia de Sorte */
+        .tabela-premios th {
+            background-color: var(--dia-sorte-verde);
+        }
+        
+        .card {
+            background-color: var(--dia-sorte-bg);
+            border: 1px solid var(--dia-sorte-dourado);
+        }
+        
+        .contagem {
+            color: var(--dia-sorte-verde);
+        }
+        
+        .resultado-header {
+            background-color: var(--dia-sorte-verde);
+        }
+        
+        /* Mostrar informações de dígitos no palpite */
+        .digitos-analise {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: var(--dia-sorte-bg);
+            border-radius: 5px;
+            display: none;
+        }
+        
+        .digitos-grid {
+            display: grid;
+            grid-template-columns: repeat(10, 1fr);
+            gap: 5px;
+            margin-top: 10px;
+        }
+        
+        .digito-tile {
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            font-weight: bold;
+            background-color: #e9e9e9;
+        }
+        
+        .digito-presente {
+            background-color: var(--dia-sorte-dourado);
+            color: #333;
+        }
+        
+        @media (max-width: 768px) {
+            .modal-content {
+                width: 95%;
+                margin: 5% auto;
+            }
+            
+            .digitos-grid {
+                grid-template-columns: repeat(5, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Modal de Informações -->
+    <div id="info-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <div class="modal-header">
+                <i class="fas fa-info-circle"></i>
+                <h2>Informações Importantes</h2>
+            </div>
+            <div class="modal-body">
+                <div class="info-section">
+                    <h3>Para os Jogos:</h3>
+                    <ul>
+                        <li><i class="fas fa-check-circle"></i> Você pode carregar quantos jogos quiser (20 mil, 80 mil, 100 mil...)</li>
+                        <li><i class="fas fa-check-circle"></i> Não há limite para quantidade de jogos</li>
+                        <li><i class="fas fa-check-circle"></i> Todos os jogos serão verificados em cada lote</li>
+                    </ul>
+                </div>
+                <div class="info-section">
+                    <h3>Para os Concursos:</h3>
+                    <ul>
+                        <li><i class="fas fa-info-circle"></i> O sistema processa em lotes de 930 concursos</li>
+                        <li><i class="fas fa-info-circle"></i> Por exemplo, se você quiser verificar do concurso 1 até o último:
+                            <ul>
+                                <li>Lote 1: concursos 1-930</li>
+                                <li>Lote 2: concursos 931-1860</li>
+                                <li>E assim por diante...</li>
+                            </ul>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="modal-close-btn" class="btn btn-dourado">Entendi</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h1>Conferidor Dia de Sorte</h1>
+        <div class="info-banner">
+            <button id="open-info-modal" class="btn btn-info">
+                <i class="fas fa-info-circle"></i> Informações Importantes
+            </button>
+        </div>
+
+        <div class="volante">
+            <h2>Selecione 7 números</h2>
+            <div class="numeros">
+                {% for i in range(1, 32) %}
+                    <button type="button" class="numero" data-numero="{{ i }}">{{ '%02d' % i }}</button>
+                {% endfor %}
+            </div>
+
+            <div class="meses-container">
+                <h2>Selecione o Mês da Sorte</h2>
+                <div class="meses">
+                    {% for mes in meses %}
+                        <button type="button" class="mes" data-mes="{{ mes }}">{{ mes }}</button>
+                    {% endfor %}
+                </div>
+            </div>
+            
+			<!-- Análise de dígitos do palpite -->
+			<div class="digitos-analise" id="digitos-analise">
+				<h3>Análise de Dígitos</h3>
+				<p>Dígitos utilizados: <span id="contador-digitos">0</span> dígitos</p>
+				<div class="digitos-grid" id="digitos-grid">
+					{% for i in range(10) %}
+						<div class="digito-tile" id="digito-{{ i }}">{{ i }}</div>
+					{% endfor %}
+				</div>
+			</div>
+        </div>
+
+        <div class="drop-zone" id="drop-zone">
+            <div class="drop-zone-content">
+                <p>Arraste e solte seu arquivo aqui ou clique para selecionar</p>
+                <p class="drop-zone-hint">Arquivos .txt ou .xlsx</p>
+                <input type="file" id="file-input" accept=".txt,.xlsx" hidden>
+            </div>
+        </div>
+
+        <div class="controles">
+            <div class="input-group">
+                <label for="inicio">Concurso Inicial:</label>
+                <input type="number" id="inicio" min="1">
+            </div>
+            <div class="input-group">
+                <label for="fim">Concurso Final:</label>
+                <input type="number" id="fim" min="1" value="{{ ultimo_concurso }}">
+            </div>
+            <div class="checkbox-group">
+                <input type="checkbox" id="somente-premiados">
+                <label for="somente-premiados">Somente premiados</label>
+            </div>
+        </div>
+
+        <div class="acoes">
+            <button id="incluir" class="btn btn-azul">Incluir Jogo</button>
+            <button id="limpar" class="btn btn-vermelho">Limpar</button>
+            <button id="sugestao" class="btn btn-roxo">Palpite</button>
+            <button id="conferir" class="btn btn-verde">Conferir</button>
+        </div>
+
+        <div class="jogos-incluidos">
+            <h3>Jogos Incluídos (<span id="contador-jogos">0</span> jogos)</h3>
+            <div id="lista-jogos" class="lista-jogos"></div>
+        </div>
+
+        <div class="acoes-jogos">
+            <button id="btn-remover-selecionados" class="btn-acao" disabled>
+                Remover Selecionados
+            </button>
+            <button id="btn-limpar-todos" class="btn-acao">
+                Limpar Todos
+            </button>
+        </div>
+
+		<div id="overlay" class="overlay" style="display: none;">
+			<div class="progress">
+				<h3>Processando Jogos</h3>
+				<div class="progress-bar">
+					<div class="progress-bar-fill" id="progress-fill"></div>
+				</div>
+				<div class="progress-text">Preparando para processar jogos...</div>
+				<div id="lote-info" class="lote-info">
+					<div class="lote-atual">
+						Lote: <span id="lote-atual">0</span> de <span id="total-lotes">0</span>
+					</div>
+					<div class="concursos-range">
+						Concursos: <span id="concurso-atual">0</span> a <span id="concurso-fim">0</span>
+					</div>
+				</div>
+				<div id="progress-logs" class="progress-logs"></div>
+				<button id="btn-cancelar-conferencia" class="btn btn-danger">
+					Cancelar Conferência
+				</button>
+			</div>
+		</div>
+
+        <div class="resultados">
+            <h2>Resumo de acertos</h2>
+            <div class="export-buttons hidden">
+                <button onclick="exportarDados('resumo-acertos', 'xlsx')" class="btn-export">
+                    <i class="fas fa-file-excel"></i> Excel
+                </button>
+                <button onclick="exportarDados('resumo-acertos', 'html')" class="btn-export">
+                    <i class="fas fa-file-code"></i> HTML
+                </button>
+            </div>
+            <div class="cards">
+                <div class="card">
+                    <h3>4 Acertos</h3>
+                    <p class="contagem" id="quatro-acertos">0</p>
+                    <p class="valor-premio" id="quatro-valor">R$ 0,00</p>
+                </div>
+                <div class="card">
+                    <h3>5 Acertos</h3>
+                    <p class="contagem" id="cinco-acertos">0</p>
+                    <p class="valor-premio" id="cinco-valor">R$ 0,00</p>
+                </div>
+                <div class="card">
+                    <h3>6 Acertos</h3>
+                    <p class="contagem" id="seis-acertos">0</p>
+                    <p class="valor-premio" id="seis-valor">R$ 0,00</p>
+                </div>
+                <div class="card">
+                    <h3>7 Acertos</h3>
+                    <p class="contagem" id="sete-acertos">0</p>
+                    <p class="valor-premio" id="sete-valor">R$ 0,00</p>
+                </div>
+            </div>
+
+            <div class="card mes-card">
+                <h3>Mês da Sorte</h3>
+                <p class="contagem" id="mes-acertos">0</p>
+                <p class="valor-premio" id="mes-valor">R$ 0,00</p>
+            </div>
+
+            <div id="detalhes-resultados" class="detalhes-resultados"></div>
+
+            <div class="tabela-resumo">
+                <h2>Resumo dos Jogos Premiados</h2>
+                <div class="export-buttons hidden">
+                    <button onclick="exportarDados('jogos-premiados', 'xlsx')" class="btn-export">
+                        <i class="fas fa-file-excel"></i> Excel
+                    </button>
+                    <button onclick="exportarDados('jogos-premiados', 'html')" class="btn-export">
+                        <i class="fas fa-file-code"></i> HTML
+                    </button>
+                </div>
+                <div class="tabela-container">
+				<table class="tabela-premios">
+					<thead>
+						<tr>
+							<th>Concurso</th>
+							<th>Data</th>
+							<th>Números Sorteados</th>
+							<th>Mês Sorteado</th>
+							<th>Seu Jogo</th>
+							<th>Seu Mês</th>
+							<th>Acertos</th>
+							<th>Dígitos Usados</th>
+							<th>Prêmio</th>
+							<th>Status</th>
+						</tr>
+					</thead>
+					<tbody id="tabela-resultados">
+						<!-- Será preenchido via JavaScript -->
+					</tbody>
+					<tfoot id="tabela-totais">
+						<tr>
+							<td colspan="8"><strong>Total de Prêmios</strong></td>
+							<td colspan="2" class="total-premios"></td>
+						</tr>
+					</tfoot>
+				</table>                </div>
+            </div>
+
+            <div class="jogos-mais-sorteados">
+                <h2>Jogos Mais Sorteados</h2>
+                <div class="export-buttons hidden">
+                    <button onclick="exportarDados('jogos-sorteados', 'xlsx')" class="btn-export">
+                        <i class="fas fa-file-excel"></i> Excel
+                    </button>
+                    <button onclick="exportarDados('jogos-sorteados', 'html')" class="btn-export">
+                        <i class="fas fa-file-code"></i> HTML
+                    </button>
+                </div>
+                
+                <div class="tabela-container">
+                    <table class="tabela-premios" id="tabela-jogos-sorteados">
+                        <thead>
+                            <tr>
+                                <th>Meu Jogo</th>
+                                <th>Total de Acertos</th>
+                                <th>Distribuição</th>
+                                <th>Acertos do Mês</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
+from flask import Flask, render_template, request, jsonify, send_file
+from processador_lotes import processar_todos_jogos
+from redis_config import redis_config
+from datetime import datetime
+from dotenv import load_dotenv
+import logging
+import random
+import aiohttp
+import asyncio
+import json
+import pandas as pd
+import io
+import os
+
+# Configurações globais para controle de requisições e processamento
+CONCURRENT_REQUESTS = 5  # Número máximo de requisições simultâneas
+BATCH_SIZE = 930        # Tamanho do lote de concursos
+RETRY_ATTEMPTS = 3      # Número de tentativas para cada requisição
+BASE_DELAY = 1         # Delay base em segundos para retry
+# Altere a linha:
+# API_BASE_URL = "https://loteriascaixa-api.herokuapp.com/api"  # API principal
+API_BASE_URL = "https://servicebus2.caixa.gov.br/portaldeloterias/api"  # API alternativa (comentada)
+
+
+# Configurações do Flask
+FLASK_RUN_TIMEOUT = 900  # 15 minutos
+CHUNK_SIZE = 1000        # Reduzido de 5000 para 1000
+CONCURSOS_PER_BATCH = 930  # Manter atual divisão de concursos
+MAX_CONCURRENT_REQUESTS = 5  # Reduzido de 10 para 5
+
+# Configuração de logs
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("Dia de Sorte Conferidor")
+
+
+# Carregar variáveis do .env
+load_dotenv()
+
+app = Flask(__name__)
+
+# Lista de meses para o Dia de Sorte
+MESES = [
+    "JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
+    "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"
+]
+
+
+
+
+async def fetch_with_retry(session, url, max_retries=3):
+    timeout = aiohttp.ClientTimeout(total=30)
+    for attempt in range(max_retries):
+        try:
+            async with session.get(url, timeout=timeout) as response:
+                if response.status == 200:
+                    return await response.json()
+                await asyncio.sleep(1)
+        except Exception as e:
+            logger.error(f"Tentativa {attempt + 1} falhou: {str(e)}")
+            if attempt == max_retries - 1:
+                return None
+            await asyncio.sleep(2 ** attempt)
+    return None
+
+async def get_latest_result():
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{API_BASE_URL}/diadesorte/latest") as response:
+                if response.status == 200:
+                    return await response.json()
+                return None
+    except Exception as e:
+        logger.error(f"Erro ao buscar último resultado: {str(e)}")
+        return None
+
+@app.route('/')
+async def index():
+    latest = await get_latest_result()
+    ultimo_concurso = latest['concurso'] if latest else 500  # valor padrão para Dia de Sorte
+    return render_template('index.html', ultimo_concurso=ultimo_concurso, meses=MESES)
+
+@app.route('/gerar_numeros')
+async def gerar_numeros():
+    numeros = random.sample(range(1, 32), 7)  # 7 números de 1 a 31
+    mes = random.choice(MESES)
+    return jsonify({'numeros': sorted(numeros), 'mes': mes})
+
+
+
+@app.route('/processar_arquivo', methods=['POST'])
+@app.route('/processar_arquivo', methods=['POST'])
+def processar_arquivo():
+    if 'file' not in request.files:
+        return jsonify({'error': 'Nenhum arquivo enviado'}), 400
+        
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
+
+    try:
+        jogos = []
+        logger.info(f"Processando arquivo: {file.filename}")
+        
+        if file.filename.endswith('.txt'):
+            try:
+                content = file.read().decode('utf-8-sig')
+                for line in content.strip().split('\n'):
+                    try:
+                        # Divide a linha em números e possivelmente um mês
+                        partes = line.strip().split()
+                        
+                        # Extrai os números (primeiros 7 valores)
+                        numbers = []
+                        mes = None
+                        
+                        for i, parte in enumerate(partes):
+                            if i < 7:  # Primeiros 7 valores são números
+                                try:
+                                    num = int(parte)
+                                    if 1 <= num <= 31:
+                                        numbers.append(num)
+                                except ValueError:
+                                    continue
+                            else:  # O que vier depois pode ser o mês
+                                mes = normalizar_mes(parte)
+                                break
+                                
+                        if len(numbers) == 7 and all(1 <= n <= 31 for n in numbers) and len(set(numbers)) == 7:
+                            jogos.append({'numeros': sorted(numbers), 'mes': mes})
+                    except Exception as e:
+                        logger.error(f"Erro na linha: {str(e)}")
+                        continue
+            except Exception as e:
+                logger.error(f"Erro no TXT: {str(e)}")
+                
+        elif file.filename.endswith(('.xlsx', '.xls')):
+            try:
+                df = pd.read_excel(file)
+                for _, row in df.iterrows():
+                    numbers = []
+                    for val in row.values[:7]:  # Primeiros 7 valores para números
+                        try:
+                            num = int(float(val))
+                            if 1 <= num <= 31:
+                                numbers.append(num)
+                        except:
+                            continue
+                    if len(numbers) == 7 and len(set(numbers)) == 7:
+                        mes = None
+                        if len(row) > 7:  # Se houver coluna para mês
+                            try:
+                                mes_valor = str(row.values[7])
+                                mes = normalizar_mes(mes_valor)
+                            except:
+                                mes = None
+                        jogos.append({'numeros': sorted(numbers), 'mes': mes})
+            except Exception as e:
+                logger.error(f"Erro no Excel: {str(e)}")
+        else:
+            return jsonify({'error': 'Use .txt ou .xlsx'}), 400
+
+        if not jogos:
+            return jsonify({'error': 'Nenhum jogo válido encontrado'}), 400
+
+        logger.info(f"Jogos processados: {len(jogos)}")
+        return jsonify({'jogos': jogos})
+
+    except Exception as e:
+        logger.error(f"Erro geral: {str(e)}")
+        return jsonify({'error': f'Erro ao processar arquivo: {str(e)}'}), 500
+ 
+ 
+@app.route('/conferir', methods=['POST'])
+async def conferir():
+    try:
+        data = request.get_json()
+        jogos = data['jogos']
+        
+        # Validação de entrada
+        if not jogos or not isinstance(jogos, list):
+            return jsonify({
+                'error': 'Formato inválido: jogos deve ser uma lista não vazia',
+                'detail': 'Verifique o formato dos jogos enviados'
+            }), 400
+            
+        for jogo in jogos:
+            if 'numeros' not in jogo or len(jogo['numeros']) != 7:
+                return jsonify({
+                    'error': 'Formato inválido: cada jogo deve ter 7 números',
+                    'detail': 'Verifique se todos os jogos possuem 7 números'
+                }), 400
+
+        # Pega os números dos concursos
+        inicio = int(data.get('inicio', 1))
+        fim = int(data.get('fim', await obter_ultimo_concurso()))
+
+        logger.info(f"\n{'='*50}")
+        logger.info(f"Iniciando conferência com {len(jogos)} jogos")
+        logger.info("Detalhes dos jogos a serem conferidos:")
+        for idx, jogo in enumerate(jogos[:5], 1):  # Mostrar apenas os 5 primeiros para não sobrecarregar o log
+            numeros_formatados = ', '.join(str(n).zfill(2) for n in sorted(jogo['numeros']))
+            mes_info = f" | Mês: {jogo.get('mes', 'não informado')}" if jogo.get('mes') else ""
+            logger.info(f"Jogo {idx}: [{numeros_formatados}]{mes_info}")
+        if len(jogos) > 5:
+            logger.info(f"... e mais {len(jogos) - 5} jogos")
+        logger.info(f"{'='*50}\n")
+        
+        # Definição dos lotes de concursos
+        logger.info(f"Faixa de concursos a verificar: {inicio} até {fim}")
+        logger.info(f"Total de concursos a processar: {fim - inicio + 1}")
+        
+        # Usa o processador em lotes com tratamento de erros melhorado
+        try:
+            resultados = await processar_todos_jogos(inicio, fim, jogos)
+            return jsonify(resultados)
+        except Exception as e:
+            logger.error(f"Erro no processador de lotes: {str(e)}")
+            logger.exception("Stack trace completo:")
+            return jsonify({
+                'error': 'Erro ao processar jogos',
+                'message': str(e),
+                'detail': 'Erro durante o processamento dos lotes de concursos'
+            }), 500
+
+    except KeyError as e:
+        logger.error(f"Erro de campo obrigatório: {str(e)}")
+        return jsonify({
+            'error': 'Campo obrigatório ausente',
+            'message': f"Campo {str(e)} não encontrado no request",
+            'detail': 'Verifique se todos os campos obrigatórios estão presentes'
+        }), 400
+    except ValueError as e:
+        logger.error(f"Erro de valor: {str(e)}")
+        return jsonify({
+            'error': 'Valor inválido',
+            'message': str(e),
+            'detail': 'Verifique se os valores fornecidos estão no formato correto'
+        }), 400
+    except Exception as e:
+        logger.error(f"Erro geral na conferência: {str(e)}")
+        logger.exception("Stack trace completo:")
+        return jsonify({
+            'error': 'Erro ao processar jogos',
+            'message': str(e),
+            'detail': 'Ocorreu um erro inesperado durante o processamento'
+        }), 500
+
+
+def calcular_premio(resultado, acertos, acertou_mes=False):
+    premio = 0
+    if 'premiacoes' in resultado:
+        for premiacao in resultado['premiacoes']:
+            if ((acertos == 7 and premiacao['descricao'] == '7 acertos') or
+                (acertos == 6 and premiacao['descricao'] == '6 acertos') or
+                (acertos == 5 and premiacao['descricao'] == '5 acertos') or
+                (acertos == 4 and premiacao['descricao'] == '4 acertos') or
+                (acertou_mes and premiacao['descricao'] == 'Mês da Sorte')):
+                premio += premiacao['valorPremio']
+    return premio
+
+async def obter_ultimo_concurso():
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{API_BASE_URL}/diadesorte/latest") as response:
+                if response.status ==200:
+                    latest = await response.json()
+                    return latest['concurso']
+                return 500  # Valor padrão se falhar
+    except Exception as e:
+        logger.error(f"Erro ao buscar último concurso: {str(e)}")
+        return 500  # Valor padrão
+
+async def fetch_concurso_with_retry(session, concurso, max_retries=3, delay_base=1):
+    for attempt in range(max_retries):
+        try:
+            cached = redis_config.get_cached_result(concurso)
+            if cached:
+                return cached
+
+            async with session.get(f"{API_BASE_URL}/diadesorte/{concurso}") as response:
+                if response.status == 200:
+                    resultado = await response.json()
+                    if resultado:
+                        # Verifica se a estrutura é da API principal ou alternativa
+                        if 'dezenas' in resultado:
+                            # Formato da API principal
+                            resultado_normalizado = {
+                                'concurso': resultado.get('concurso'),
+                                'data': resultado.get('data'),
+                                'dezenas': resultado.get('dezenas'),
+                                'mesDaSorte': resultado.get('mesDaSorte', ''),
+                                'premiacoes': resultado.get('premiacoes', [])
+                            }
+                        elif 'listaDezenas' in resultado:
+                            # Formato da API alternativa
+                            resultado_normalizado = {
+                                'concurso': resultado.get('numero'),
+                                'data': resultado.get('dataApuracao'),
+                                'dezenas': resultado.get('listaDezenas'),
+                                'mesDaSorte': resultado.get('nomeTimeCoracaoMesSorte', ''),
+                                'premiacoes': []
+                            }
+                            
+                            # Converter o formato de premiações
+                            if 'listaRateioPremio' in resultado:
+                                for premio in resultado['listaRateioPremio']:
+                                    resultado_normalizado['premiacoes'].append({
+                                        'descricao': premio.get('descricaoFaixa', ''),
+                                        'ganhadores': premio.get('numeroDeGanhadores', 0),
+                                        'valorPremio': premio.get('valorPremio', 0)
+                                    })
+                        else:
+                            # Formato desconhecido
+                            resultado_normalizado = resultado
+                        
+                        redis_config.set_cached_result(concurso, resultado_normalizado)
+                        return resultado_normalizado
+                
+                # Se chegou aqui, a resposta não foi válida
+                delay = delay_base * (2 ** attempt)  # Exponential backoff
+                await asyncio.sleep(delay)
+                continue
+                
+        except Exception as e:
+            logger.error(f"Tentativa {attempt + 1} falhou para concurso {concurso}: {str(e)}")
+            if attempt < max_retries - 1:
+                delay = delay_base * (2 ** attempt)
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"Todas as tentativas falharam para concurso {concurso}")
+                return None
+    return None
+
+def atualizar_estatisticas_jogo(jogos_stats, jogo, dezenas, mes_sorteado):
+    jogo_key = tuple(sorted(jogo['numeros']))
+    acertos = len(set(jogo['numeros']) & set(dezenas))
+    acertou_mes = jogo.get('mes') and jogo['mes'].upper() == mes_sorteado
+    
+    if jogo_key not in jogos_stats:
+        jogos_stats[jogo_key] = {
+            'numeros': list(jogo_key),
+            'total': 0,
+            'distribuicao': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0},
+            'acertos_mes': 0
+        }
+    
+    jogos_stats[jogo_key]['total'] += 1
+    jogos_stats[jogo_key]['distribuicao'][acertos] += 1
+    if acertou_mes:
+        jogos_stats[jogo_key]['acertos_mes'] += 1
+
+    return jogos_stats
+
+@app.route('/exportar/<tipo>/<formato>', methods=['POST'])
+def exportar_dados(tipo, formato):
+    data = request.get_json()
+    
+    if tipo == 'resumo-acertos':
+        df = pd.DataFrame({
+            'Quantidade de Acertos': ['4 acertos', '5 acertos', '6 acertos', '7 acertos', 'Mês da Sorte'],
+            'Total': [
+                data['resumo']['quatro'],
+                data['resumo']['cinco'],
+                data['resumo']['seis'],
+                data['resumo']['sete'],
+                data['resumo']['mes']
+            ],
+            'Prêmio Total': [
+                sum(r['premio'] for r in data['acertos'] if r['acertos'] == 4),
+                sum(r['premio'] for r in data['acertos'] if r['acertos'] == 5),
+                sum(r['premio'] for r in data['acertos'] if r['acertos'] == 6),
+                sum(r['premio'] for r in data['acertos'] if r['acertos'] == 7),
+                sum(r['premio'] for r in data['acertos'] if r['acertou_mes'])
+            ]
+        })
+    
+    elif tipo == 'jogos-premiados':
+        df = pd.DataFrame([{
+            'Concurso': r['concurso'],
+            'Data': r['data'],
+            'Números Sorteados': ' '.join(str(n) for n in r['numeros_sorteados']),
+            'Mês Sorteado': r['mes_sorteado'],
+            'Seus Números': ' '.join(str(n) for n in r['seus_numeros']),
+            'Seu Mês': r['seu_mes'] or '',
+            'Acertos': r['acertos'],
+            'Acertou Mês': 'Sim' if r['acertou_mes'] else 'Não',
+            'Prêmio': r['premio']
+        } for r in data['acertos']])
+    
+    elif tipo == 'jogos-sorteados':
+        if 'jogos_stats' in data:
+            df = pd.DataFrame([{
+                'Números': ' '.join(str(n) for n in jogo['numeros']),
+                'Total de Acertos': jogo['total'],
+                'Distribuição': ', '.join(f"{p} pontos: {v}x" for p, v in jogo['distribuicao'].items() if v > 0),
+                'Acertos do Mês': jogo.get('acertos_mes', 0)
+            } for jogo in data['jogos_stats']])
+        else:
+            return jsonify({'error': 'Dados de estatísticas não disponíveis'}), 400
+    else:
+        return jsonify({'error': 'Tipo de exportação inválido'}), 400
+
+    if formato == 'xlsx':
+        output = io.BytesIO()
+        df.to_excel(output, index=False)
+        output.seek(0)
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=f"{tipo}.xlsx"
+        )
+    elif formato == 'html':
+        return df.to_html(classes='table table-striped', index=False)
+    else:
+        return jsonify({'error': 'Formato de exportação inválido'}), 400
+
+
+def normalizar_mes(mes_abreviado):
+    """Converte mês abreviado para o formato completo"""
+    meses_map = {
+        "JAN": "JANEIRO",
+        "FEV": "FEVEREIRO",
+        "MAR": "MARÇO", 
+        "ABR": "ABRIL",
+        "MAI": "MAIO",
+        "JUN": "JUNHO",
+        "JUL": "JULHO",
+        "AGO": "AGOSTO",
+        "SET": "SETEMBRO",
+        "OUT": "OUTUBRO",
+        "NOV": "NOVEMBRO",
+        "DEZ": "DEZEMBRO"
+    }
+    
+    if not mes_abreviado:
+        return None
+        
+    mes_upper = mes_abreviado.upper()
+    
+    # Se já for o nome completo
+    if mes_upper in [m.upper() for m in MESES]:
+        return mes_upper
+        
+    # Se for abreviado
+    if mes_upper in meses_map:
+        return meses_map[mes_upper]
+        
+    # Verifica se é uma abreviação de 3 letras para qualquer mês
+    for abrev, completo in meses_map.items():
+        if completo.upper().startswith(mes_upper):
+            return completo
+            
+    return mes_upper  # Retorna o que foi fornecido se não encontrar correspondência
+
+if __name__ == '__main__':
+    #port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 500))
+    app.run(host="0.0.0.0", port=port)
+	
+	from flask import Flask, jsonify
+import aiohttp
+import asyncio
+import logging
+from typing import List, Dict, Any
+import time
+
+# Configuração do logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("ProcessadorLotes")
+
+class ProcessadorLotes:
+    def __init__(self, tamanho_lote: int = 930, max_concurrent: int = 5):
+        """
+        Inicializa o processador de lotes
+        
+        Args:
+            tamanho_lote: Tamanho de cada lote (padrão: 930)
+            max_concurrent: Número máximo de requisições simultâneas (padrão: 5)
+        """
+        self.tamanho_lote = tamanho_lote
+        self.max_concurrent = max_concurrent
+        self.session = None
+        self.api_base_url = "https://loteriascaixa-api.herokuapp.com/api"
+    
+    async def __aenter__(self):
+        """Inicializa a sessão HTTP"""
+        self.session = aiohttp.ClientSession()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Fecha a sessão HTTP"""
+        if self.session:
+            await self.session.close()
+    
+async def buscar_com_retry(self, concurso: int, max_tentativas: int = 3) -> Dict:
+    """
+    Busca um resultado específico com tentativas em caso de falha
+    
+    Args:
+        concurso: Número do concurso
+        max_tentativas: Número máximo de tentativas
+        
+    Returns:
+        Dict com o resultado ou None em caso de falha
+    """
+    for tentativa in range(max_tentativas):
+        try:
+            # Tenta obter do cache primeiro
+            from redis_config import redis_config
+            cached = redis_config.get_cached_result(concurso)
+            if cached:
+                logger.debug(f"Concurso {concurso} obtido do cache.")
+                return cached
+                
+            # Se não estiver em cache, busca da API
+            async with self.session.get(
+                f"{self.api_base_url}/diadesorte/{concurso}",
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status == 200:
+                    try:
+                        resultado = await response.json()
+                        if resultado:
+                            # Verificar se o resultado tem os campos esperados
+                            if 'dezenas' in resultado or 'listaDezenas' in resultado:
+                                # Normaliza o resultado
+                                if 'dezenas' in resultado:
+                                    # Formato da API principal
+                                    dezenas = resultado.get('dezenas', [])
+                                    mes_sorte = resultado.get('mesDaSorte', '')
+                                elif 'listaDezenas' in resultado:
+                                    # Formato da API alternativa
+                                    dezenas = resultado.get('listaDezenas', [])
+                                    mes_sorte = resultado.get('nomeTimeCoracaoMesSorte', '')
+                                else:
+                                    logger.error(f"Formato de resultado desconhecido para concurso {concurso}")
+                                    await asyncio.sleep(2 ** tentativa)
+                                    continue
+                                    
+                                redis_config.set_cached_result(concurso, resultado)
+                                return resultado
+                            else:
+                                logger.error(f"Resultado incompleto para concurso {concurso}")
+                        else:
+                            logger.error(f"Resultado vazio para concurso {concurso}")
+                    except Exception as e:
+                        logger.error(f"Erro ao processar resposta para concurso {concurso}: {str(e)}")
+                        
+                logger.warning(f"Resposta inválida para concurso {concurso}, status: {response.status}")
+                await asyncio.sleep(2 ** tentativa)  # Backoff exponencial
+                continue
+                
+        except aiohttp.ClientError as e:
+            logger.error(f"Erro de rede ao buscar concurso {concurso}: {str(e)}")
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout ao buscar concurso {concurso}")
+        except Exception as e:
+            logger.error(f"Erro desconhecido ao buscar concurso {concurso}: {str(e)}")
+            
+        if tentativa < max_tentativas - 1:
+            await asyncio.sleep(2 ** tentativa)  # Backoff exponencial
+        else:
+            logger.error(f"Todas as tentativas falharam para concurso {concurso}")
+            
+    return None
+
+
+    async def processar_lote(self, inicio: int, fim: int, jogos: List[Dict]) -> List[Dict]:
+        """
+        Processa um lote de resultados
+        
+        Args:
+            inicio: Número do primeiro concurso
+            fim: Número do último concurso
+            jogos: Lista de jogos para conferir
+            
+        Returns:
+            Lista de resultados processados
+        """
+        tarefas = []
+        resultados = []
+        
+        # Cria tarefas para busca concorrente
+        for concurso in range(inicio, min(fim + 1, inicio + self.tamanho_lote)):
+            tarefa = asyncio.create_task(self.buscar_com_retry(concurso))
+            tarefas.append((concurso, tarefa))
+            
+            # Se atingiu o máximo de tarefas concorrentes, espera algumas completarem
+            if len(tarefas) >= self.max_concurrent:
+                completadas = await self.processar_chunk_tarefas(tarefas[:self.max_concurrent], jogos)
+                resultados.extend(completadas)
+                tarefas = tarefas[self.max_concurrent:]
+        
+        # Processa tarefas restantes
+        if tarefas:
+            completadas = await self.processar_chunk_tarefas(tarefas, jogos)
+            resultados.extend(completadas)
+        
+        return resultados
+
+    async def processar_chunk_tarefas(self, tarefas: List[tuple], jogos: List[Dict]) -> List[Dict]:
+        """
+        Processa um conjunto de tarefas e confere contra os jogos
+        
+        Args:
+            tarefas: Lista de tuplas (concurso, tarefa)
+            jogos: Lista de jogos para conferir
+            
+        Returns:
+            Lista de resultados processados
+        """
+        resultados = []
+        for concurso, tarefa in tarefas:
+            try:
+                resultado = await tarefa
+                if resultado and 'dezenas' in resultado:
+                    # Processa cada jogo contra este resultado
+                    resultados_processados = self.conferir_jogos_contra_resultado(jogos, resultado)
+                    resultados.extend(resultados_processados)
+            except Exception as e:
+                logger.error(f"Erro processando concurso {concurso}: {str(e)}")
+        return resultados
+def conferir_jogos_contra_resultado(self, jogos: List[Dict], resultado: Dict) -> List[Dict]:
+    """
+    Confere jogos contra um resultado específico
+    
+    Args:
+        jogos: Lista de jogos para conferir
+        resultado: Resultado do concurso
+        
+    Returns:
+        Lista de acertos encontrados
+    """
+    acertos = []
+    # Normaliza a estrutura do resultado para suportar múltiplas APIs
+    dezenas = [int(d) for d in resultado.get('dezenas', [])]
+    mes_sorteado = resultado.get('mesDaSorte', '')
+    
+    # Se estiver usando a API alternativa, o mês pode estar em outro campo
+    if not mes_sorteado and 'nomeTimeCoracaoMesSorte' in resultado:
+        mes_sorteado = resultado['nomeTimeCoracaoMesSorte']
+    
+    if mes_sorteado:
+        mes_sorteado = mes_sorteado.upper()
+    
+    for jogo in jogos:
+        numeros = jogo['numeros']
+        mes_jogado = jogo.get('mes', '').upper() if jogo.get('mes') else None
+        
+        acertos_numeros = len(set(numeros) & set(dezenas))
+        acertou_mes = mes_jogado and mes_sorteado and mes_jogado == mes_sorteado
+        
+        if acertos_numeros >= 4 or acertou_mes:
+            premio = self.calcular_premio(resultado, acertos_numeros, acertou_mes)
+            acertos.append({
+                'concurso': resultado.get('concurso'),
+                'data': resultado.get('data'),
+                'numeros_sorteados': dezenas,
+                'mes_sorteado': mes_sorteado,
+                'seus_numeros': numeros,
+                'seu_mes': mes_jogado,
+                'acertos': acertos_numeros,
+                'acertou_mes': acertou_mes,
+                'premio': premio
+            })
+            
+    return acertos
+
+
+    def calcular_premio(self, resultado: Dict, acertos: int, acertou_mes: bool = False) -> float:
+        """
+        Calcula o prêmio baseado nos acertos
+        
+        Args:
+            resultado: Resultado do concurso
+            acertos: Número de acertos
+            acertou_mes: Se acertou o mês
+            
+        Returns:
+            Valor do prêmio
+        """
+        premio = 0
+        if 'premiacoes' in resultado:
+            for premiacao in resultado['premiacoes']:
+                if ((acertos == 7 and premiacao['descricao'] == '7 acertos') or
+                    (acertos == 6 and premiacao['descricao'] == '6 acertos') or
+                    (acertos == 5 and premiacao['descricao'] == '5 acertos') or
+                    (acertos == 4 and premiacao['descricao'] == '4 acertos') or
+                    (acertou_mes and premiacao['descricao'] == 'Mês da Sorte')):
+                    premio += premiacao['valorPremio']
+        return premio
+
+async def processar_todos_jogos(inicio: int, fim: int, jogos: List[Dict]) -> Dict:
+    """
+    Processa todos os jogos em lotes
+    
+    Args:
+        inicio: Primeiro concurso
+        fim: Último concurso
+        jogos: Lista de jogos para conferir
+        
+    Returns:
+        Dicionário com resultados e estatísticas
+    """
+    try:
+        async with ProcessadorLotes() as processador:
+            todos_resultados = []
+            total_lotes = math.ceil((fim - inicio + 1) / processador.tamanho_lote)
+            
+            for i in range(inicio, fim + 1, processador.tamanho_lote):
+                lote_atual = (i - inicio) // processador.tamanho_lote + 1
+                lote_fim = min(i + processador.tamanho_lote - 1, fim)
+                
+                logger.info(f"Processando lote {lote_atual} de {total_lotes}: concursos {i} até {lote_fim}")
+                
+                try:
+                    resultados_lote = await processador.processar_lote(i, lote_fim, jogos)
+                    todos_resultados.extend(resultados_lote)
+                except Exception as e:
+                    logger.error(f"Erro no processamento do lote {lote_atual}: {str(e)}")
+                    logger.error(f"Tentando continuar com o próximo lote...")
+                    await asyncio.sleep(2)  # Pausa mais longa antes de tentar o próximo lote
+                    continue
+                
+                # Pequena pausa entre lotes para evitar sobrecarga
+                await asyncio.sleep(0.5)
+            
+            # Se não conseguimos processar nenhum resultado, levanta uma exceção
+            if not todos_resultados and total_lotes > 0:
+                raise Exception("Não foi possível processar nenhum resultado nos lotes de concursos.")
+                
+            logger.info("Processamento de todos os lotes concluído com sucesso!")
+            
+            return {
+                'acertos': todos_resultados,
+                'resumo': calcular_resumo(todos_resultados)
+            }
+    except Exception as e:
+        logger.error(f"Erro no processamento geral: {str(e)}")
+        raise Exception(f"Erro ao processar os lotes de concursos: {str(e)}")
+
+def calcular_resumo(resultados: List[Dict]) -> Dict:
+    """
+    Calcula o resumo dos resultados
+    
+    Args:
+        resultados: Lista de resultados
+        
+    Returns:
+        Dicionário com resumo dos acertos e prêmios
+    """
+    return {
+        'quatro': sum(1 for r in resultados if r['acertos'] == 4),
+        'cinco': sum(1 for r in resultados if r['acertos'] == 5),
+        'seis': sum(1 for r in resultados if r['acertos'] == 6),
+        'sete': sum(1 for r in resultados if r['acertos'] == 7),
+        'mes': sum(1 for r in resultados if r['acertou_mes']),
+        'total_premios': sum(r['premio'] for r in resultados)
+    }

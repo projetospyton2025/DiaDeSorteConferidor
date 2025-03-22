@@ -25,7 +25,7 @@ body {
     font-family: Arial, sans-serif;
     line-height: 1.6;
     color: var(--text-primary);
-    background-color: var(--light-gray);
+    background-color: var(--white);
     padding: clamp(10px, 2vw, 20px);
 }
 
@@ -408,3 +408,625 @@ h2 {
         padding: 15px;
     }
 }
+.btn-analisar {
+    padding: 4px 8px;
+    margin-right: 5px;
+    background-color: var(--dia-sorte-dourado);
+    color: #333;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background-color 0.2s;
+}
+
+.btn-analisar:hover {
+    background-color: var(--dia-sorte-claro);
+}
+
+.jogo-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 10px;
+    margin-bottom: 5px;
+    background-color: var(--dia-sorte-bg);
+    border-radius: 5px;
+    transition: background-color 0.2s;
+}
+
+.jogo-item:hover {
+    background-color: rgba(0, 114, 46, 0.1);
+}
+
+.jogo-item.selecionado {
+    background-color: rgba(0, 114, 46, 0.2);
+}
+
+    /* Cores Oficiais Dia de Sorte */
+    :root {
+        --dia-sorte-verde: #00722E;
+        --dia-sorte-verde-claro: #008a37;
+        --dia-sorte-dourado: #D9B13B;
+        --dia-sorte-claro: #E6D089;
+        --dia-sorte-escuro: #005423;
+        --dia-sorte-bg: #F5F0E1;
+    }
+    
+    /* Estilo dos cabeçalhos de resultado */
+    .resultado-header {
+        background-color: var(--dia-sorte-verde);
+        color: white !important;
+        padding: 8px 12px;
+        border-radius: 4px 4px 0 0;
+    }
+    
+    .resultado-header h3 {
+        color: white !important;
+        margin: 0;
+        font-size: 16px;
+    }
+    
+    /* Layout dos resultados lado a lado */
+    .detalhes-resultados {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(450px, 1fr));
+        gap: 15px;
+    }
+    
+    .resultado-item {
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        overflow: hidden;
+        background-color: white;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    /* Ajustes nos botões principais */
+    .acoes {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 20px 0;
+        justify-content: center;
+    }
+    
+    .acoes .btn {
+        padding: 10px 20px;
+        font-size: 16px;
+        font-weight: 600;
+        border-radius: 5px;
+        cursor: pointer;
+        transition: all 0.2s;
+        min-width: 120px;
+        text-align: center;
+    }
+    
+    .btn-azul {
+        background-color: var(--dia-sorte-verde);
+        color: white;
+        border: none;
+    }
+    
+    .btn-azul:hover {
+        background-color: var(--dia-sorte-verde-claro);
+    }
+    
+    .btn-roxo {
+        background-color: var(--dia-sorte-dourado);
+        color: #333;
+        border: none;
+    }
+    
+    .btn-roxo:hover {
+        background-color: var(--dia-sorte-claro);
+    }
+    
+    .btn-verde {
+        background-color: var(--dia-sorte-verde);
+        color: white;
+        border: none;
+    }
+    
+    .btn-verde:hover {
+        background-color: var(--dia-sorte-verde-claro);
+    }
+    
+    /* Ajuste dos botões de ação de jogos */
+    .acoes-jogos {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 15px 0;
+    }
+    
+    .acoes-jogos .btn-acao {
+        padding: 8px 15px;
+        background-color: #f0f0f0;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.2s;
+    }
+    
+    .acoes-jogos .btn-acao:hover:not(:disabled) {
+        background-color: #e0e0e0;
+    }
+    
+    /* Modal de processamento */
+    .progress {
+        background-color: white;
+        padding: 20px;
+        border-radius: 8px;
+        width: 90%;
+        max-width: 450px;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    }
+    
+    .progress h3 {
+        color: var(--dia-sorte-verde);
+        margin-top: 0;
+        border-bottom: 2px solid var(--dia-sorte-dourado);
+        padding-bottom: 10px;
+    }
+    
+    .progress-bar {
+        height: 12px;
+        background-color: #f0f0f0;
+        border-radius: 6px;
+        overflow: hidden;
+        margin: 15px 0;
+    }
+    
+    .progress-bar-fill {
+        background-color: var(--dia-sorte-verde);
+        height: 100%;
+        transition: width 0.3s ease;
+    }
+    
+    .btn-danger {
+        background-color: #dc3545 !important;
+        color: white;
+        border: none;
+        padding: 8px 15px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-top: 15px;
+        font-weight: 600;
+        transition: background-color 0.2s;
+    }
+    
+    .btn-danger:hover {
+        background-color: #c82333 !important;
+    }
+    
+    /* Jogos Mais Sorteados - Cabeçalho */
+    .jogos-mais-sorteados h2 {
+        color: var(--dia-sorte-verde);
+        border-bottom: 2px solid var(--dia-sorte-dourado);
+        padding-bottom: 10px;
+        margin-top: 25px;
+    }
+    
+    /* Tabela de jogos mais sorteados */
+    #tabela-jogos-sorteados thead th {
+        background-color: var(--dia-sorte-verde);
+        color: white;
+        padding: 10px;
+        text-align: left;
+    }
+    
+    #tabela-jogos-sorteados tbody tr:nth-child(even) {
+        background-color: #f5f5f5;
+    }
+    
+    /* Melhor visualização dos jogos na lista */
+    .jogo-item {
+        display: flex;
+        align-items: center;
+        padding: 8px 10px;
+        margin-bottom: 5px;
+        background-color: #f8f8f8;
+        border-radius: 4px;
+        border-left: 3px solid var(--dia-sorte-verde);
+    }
+    
+    .jogo-item:hover {
+        background-color: #f0f0f0;
+    }
+    
+    .jogo-item.selecionado {
+        background-color: rgba(0, 114, 46, 0.1);
+        border-left-color: var(--dia-sorte-dourado);
+    }
+    
+    .jogo-numero {
+        display: inline-block;
+        width: 24px;
+        height: 24px;
+        line-height: 24px;
+        text-align: center;
+        border-radius: 50%;
+        background-color: #f0f0f0;
+        margin-right: 3px;
+        font-weight: 600;
+        font-size: 12px;
+    }
+    
+    /* Espaçamento entre números e botões na lista de jogos */
+    .jogo-mes {
+        margin-left: 8px;
+        color: #777;
+    }
+    
+    .btn-remover {
+        margin-left: auto;
+        padding: 4px 8px;
+        background-color: #dc3545;
+        color: white;
+        border: none;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 12px;
+    }
+    
+    .btn-remover:hover {
+        background-color: #c82333;
+    }
+    
+    .btn-analisar {
+        padding: 4px 8px;
+        margin-right: 5px;
+        background-color: var(--dia-sorte-dourado);
+        color: #333;
+        border: none;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 12px;
+    }
+    
+    .btn-analisar:hover {
+        background-color: var(--dia-sorte-claro);
+    }
+    /* Estilos para a análise de dígitos */
+    .jogo-info {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .jogo-digitos {
+        font-size: 12px;
+        color: #666;
+        margin-top: 3px;
+    }
+    
+    .jogo-botoes {
+        display: flex;
+        gap: 5px;
+    }
+    
+    .digitos-celula {
+        font-size: 12px;
+        white-space: nowrap;
+        background-color: #f8f8f8;
+    }
+    
+    .digitos-info {
+        margin-top: 5px;
+        font-size: 13px;
+        color: #666;
+    }
+    
+    .digitos-info strong {
+        color: var(--dia-sorte-verde);
+    }
+    
+    /* Melhorias na visualização dos jogos */
+    .jogo-item {
+        display: flex;
+        align-items: center;
+        padding: 8px 10px;
+        margin-bottom: 8px;
+        background-color: #f8f8f8;
+        border-radius: 4px;
+        border-left: 3px solid var(--dia-sorte-verde);
+    }
+    
+    .jogo-checkbox {
+        margin-right: 10px;
+    }
+    
+    .jogo-numeros {
+        display: flex;
+        align-items: center;
+    }
+/* Formatação dos botões de exportação */
+.export-buttons {
+    display: flex;
+    gap: 10px;
+    margin: 15px 0;
+}
+
+.export-buttons .btn-export {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background-color: var(--dia-sorte-verde);
+    color: white !important;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.export-buttons .btn-export:hover {
+    background-color: var(--dia-sorte-verde-claro);
+}
+
+.export-buttons .btn-export i {
+    font-size: 16px;
+}
+
+/* Cabeçalhos de tabela */
+.tabela-premios th {
+    background-color: var(--dia-sorte-verde);
+    color: white !important;
+    padding: 10px;
+    text-align: left;
+    font-weight: 600;
+}
+
+/* Ajustes de cores nos cabeçalhos */
+.jogos-mais-sorteados h2,
+.tabela-resumo h2 {
+    color: var(--dia-sorte-verde);
+    border-bottom: 2px solid var(--dia-sorte-dourado);
+    padding-bottom: 10px;
+    margin-top: 25px;
+}
+    /* Estilo para os botões de exportação */
+    .export-buttons {
+        display: flex;
+        gap: 10px;
+        margin: 15px 0;
+    }
+    
+    .export-buttons .btn-export {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        background-color: var(--dia-sorte-verde);
+        color: white !important;
+        border: none;
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+    
+    .export-buttons .btn-export:hover {
+        background-color: var(--dia-sorte-verde-claro);
+    }
+    
+    .export-buttons .btn-export i {
+        font-size: 16px;
+    }
+    
+    /* Estilo para destaque do mês */
+    .acerto-mes {
+        color: var(--dia-sorte-dourado);
+        font-weight: bold;
+        margin-left: 5px;
+    }
+    
+    /* Ajuste nas tabelas para garantir que o texto seja legível */
+    .tabela-premios th {
+        background-color: var(--dia-sorte-verde);
+        color: white !important;
+        padding: 10px;
+        text-align: left;
+        font-weight: 600;
+    }
+	/* Estilos para a barra de progresso */
+	.progress-bar {
+		height: 20px;
+		background-color: #f0f0f0;
+		border-radius: 10px;
+		overflow: hidden;
+		margin: 15px 0;
+		border: 1px solid #ddd;
+		position: relative;
+	}
+
+	.progress-bar-fill {
+		height: 100%;
+		background-color: var(--dia-sorte-verde);
+		width: 0%;
+		transition: width 0.5s ease;
+		position: relative;
+		overflow: hidden;
+	}
+
+	/* Efeito de animação na barra de progresso */
+	.progress-bar-fill.animando::after {
+		content: '';
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		background: linear-gradient(
+			90deg, 
+			rgba(255,255,255,0) 0%, 
+			rgba(255,255,255,0.3) 50%, 
+			rgba(255,255,255,0) 100%
+		);
+		animation: progress-shine 1.5s linear infinite;
+	}
+
+	@keyframes progress-shine {
+		0% { transform: translateX(-100%); }
+		100% { transform: translateX(100%); }
+	}
+
+	/* Estilo para os logs de progresso */
+	.progress-logs {
+		max-height: 120px;
+		overflow-y: auto;
+		margin: 15px 0;
+		padding: 10px;
+		background-color: #f8f8f8;
+		border-radius: 5px;
+		font-size: 13px;
+		border: 1px solid #eee;
+	}
+
+	.log-item {
+		margin-bottom: 5px;
+		padding-bottom: 5px;
+		border-bottom: 1px solid #eee;
+	}
+
+	.log-item:last-child {
+		margin-bottom: 0;
+		padding-bottom: 0;
+		border-bottom: none;
+	}
+
+	.log-time {
+		color: #666;
+		font-weight: bold;
+		margin-right: 5px;
+	}
+
+	/* Estilo para texto informativo */
+	.progress-text {
+		font-weight: bold;
+		color: var(--dia-sorte-verde);
+		margin: 10px 0;
+		text-align: center;
+	}
+
+	.lote-info {
+		background-color: #f0f8f0;
+		padding: 10px;
+		border-radius: 5px;
+		margin: 10px 0;
+		border-left: 3px solid var(--dia-sorte-verde);
+		font-size: 14px;
+	}
+	/* Cores para feedback de status */
+.progress-bar-fill.error {
+    background-color: #dc3545 !important;
+}
+
+.progress-bar-fill.success {
+    background-color: var(--dia-sorte-verde) !important;
+}
+
+.progress-bar-fill.warning {
+    background-color: #ffc107 !important;
+}
+
+/* Animação para a barra de progresso */
+.progress-bar-fill {
+    height: 100%;
+    background-color: var(--dia-sorte-verde);
+    width: 0%;
+    transition: width 0.5s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.progress-bar-fill::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(
+        90deg, 
+        rgba(255,255,255,0) 0%, 
+        rgba(255,255,255,0.3) 50%, 
+        rgba(255,255,255,0) 100%
+    );
+    animation: progress-shine 1.5s linear infinite;
+}
+
+@keyframes progress-shine {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+	/* Estilo dos logs de progresso */
+	.progress-logs {
+		max-height: 150px;
+		overflow-y: auto;
+		background-color: #f8f8f8;
+		border: 1px solid #eee;
+		border-radius: 4px;
+		padding: 10px;
+		margin-top: 15px;
+		font-size: 13px;
+	}
+
+	.lote-info-card {
+		padding: 8px;
+		border-left: 3px solid var(--dia-sorte-verde);
+		background-color: #f0fff0;
+		margin-bottom: 8px;
+		border-radius: 0 4px 4px 0;
+	}
+
+	.lote-header {
+		font-weight: bold;
+		color: var(--dia-sorte-verde);
+		margin-bottom: 4px;
+	}
+
+	.log-time {
+		font-family: monospace;
+		color: #6c757d;
+		margin-right: 5px;
+	}
+
+	/* Melhorias gerais de estilo */
+	.progress {
+		width: 90%;
+		max-width: 500px;
+		background-color: white;
+		border-radius: 8px;
+		box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+		padding: 20px;
+	}
+
+	.progress h3 {
+		text-align: center;
+		color: var(--dia-sorte-verde);
+		margin-top: 0;
+		margin-bottom: 15px;
+		padding-bottom: 10px;
+		border-bottom: 1px solid #eee;
+	}
+
+	.btn-danger {
+		display: block;
+		margin: 15px auto 0;
+		background-color: #dc3545;
+		color: white;
+		border: none;
+		padding: 10px 20px;
+		border-radius: 4px;
+		font-weight: bold;
+		cursor: pointer;
+		transition: background-color 0.2s;
+	}
+
+	.btn-danger:hover {
+		background-color: #c82333;
+	}
